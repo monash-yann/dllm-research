@@ -1,0 +1,194 @@
+# DLLM Sampling System Configuration Template
+
+# Core sampling parameters
+sampling:
+  # Temperature controls randomness (0.1-2.0)
+  # Lower = more deterministic, Higher = more creative
+  temperature: 0.8
+  
+  # Top-k sampling: consider only top K tokens
+  top_k: 50
+  
+  # Top-p (nucleus) sampling: consider tokens with cumulative probability <= p
+  top_p: 0.9
+  
+  # Repetition penalty to avoid repeated tokens (1.0 = no penalty, >1.0 = penalty)
+  repetition_penalty: 1.1
+  
+  # Length penalty for sequence length control
+  length_penalty: 1.0
+  
+  # Batch processing settings
+  batch_size: 8
+  max_length: 512
+  min_length: 1
+  
+  # Caching settings
+  use_cache: true
+  cache_size: 10000
+  
+  # Performance monitoring
+  track_metrics: true
+  log_level: "INFO"
+
+# Inference acceleration settings
+acceleration:
+  # Memory optimizations
+  use_half_precision: true          # Use FP16 for faster inference
+  use_flash_attention: true         # Use Flash Attention if available
+  enable_torch_compile: false       # PyTorch 2.0 compilation (experimental)
+  gradient_checkpointing: false     # Save memory at cost of speed
+  offload_to_cpu: false            # Offload model to CPU when not in use
+  max_memory_per_gpu: null         # Max memory per GPU (GB)
+  
+  # Batching optimizations
+  dynamic_batching: true           # Enable dynamic request batching
+  max_batch_size: 8               # Maximum batch size
+  batch_timeout_ms: 100           # Timeout for batch formation (ms)
+  
+  # KV cache optimization
+  use_kv_cache: true              # Enable key-value caching
+  kv_cache_max_length: 2048       # Maximum cache length
+  sliding_window_size: null       # Sliding window size (null = no limit)
+  
+  # Quantization (experimental)
+  use_int8: false                 # 8-bit quantization
+  use_int4: false                 # 4-bit quantization
+  
+  # Profiling and debugging
+  enable_profiling: false         # Enable PyTorch profiler
+  profile_memory: false           # Include memory profiling
+
+# Distributed inference settings
+distributed:
+  # Process configuration
+  world_size: 1                   # Number of processes/workers
+  rank: 0                        # Current process rank
+  backend: "nccl"                # Communication backend (nccl, gloo)
+  init_method: "env://"          # Initialization method
+  
+  # Network configuration
+  master_addr: "localhost"       # Master node address
+  master_port: 29500            # Master node port
+  local_rank: 0                 # Local process rank
+  
+  # Load balancing
+  load_balancing_strategy: "round_robin"  # round_robin, least_loaded, hash_based
+  request_timeout: 30.0         # Request timeout in seconds
+  
+  # Communication settings
+  max_message_size: 10485760    # 10MB max message size
+  heartbeat_interval: 5.0       # Heartbeat interval in seconds
+  
+  # Model parallelism (advanced)
+  model_parallel_size: 1        # Model parallel size
+  pipeline_parallel_size: 1     # Pipeline parallel size
+  
+  # Memory management
+  offload_activations: false    # Offload activations to save memory
+  use_zero_optimizer: false     # Use ZeRO optimizer
+
+# Server configuration
+server:
+  host: "localhost"             # Server host
+  port: 8000                   # Server port
+  workers: 1                   # Number of worker processes
+  
+# Model configuration
+model:
+  # Model loading settings
+  model_path: "/path/to/your/model"  # Path to model files
+  tokenizer_path: null               # Path to tokenizer (null = same as model)
+  device_map: "auto"                 # Device mapping strategy
+  
+  # Model optimization
+  load_in_8bit: false               # Load model in 8-bit precision
+  load_in_4bit: false               # Load model in 4-bit precision
+  use_safetensors: true             # Use safetensors format if available
+  
+  # Generation defaults
+  max_new_tokens: 50               # Default max new tokens
+  do_sample: true                  # Enable sampling by default
+  num_beams: 1                     # Number of beams for beam search
+  early_stopping: false           # Early stopping for beam search
+  pad_token_id: null               # Padding token ID
+  eos_token_id: null               # End of sequence token ID
+  bos_token_id: null               # Beginning of sequence token ID
+
+# Logging configuration
+logging:
+  level: "INFO"                    # Log level (DEBUG, INFO, WARNING, ERROR)
+  file: null                       # Log file path (null = console only)
+  format: "{time} | {level} | {name}:{function}:{line} - {message}"
+  rotation: "100 MB"               # Log rotation size
+  retention: "7 days"              # Log retention period
+
+# Cache configuration
+cache:
+  # Local cache settings
+  max_size: 10000                  # Maximum number of cache entries
+  max_memory_mb: 500.0             # Maximum memory usage (MB)
+  ttl_seconds: 3600.0              # Time to live for cache entries
+  enable_persistence: false        # Save cache to disk
+  cache_file: "token_cache.pkl"    # Cache file path
+  
+  # Distributed cache settings (if applicable)
+  distributed_cache: false         # Enable distributed caching
+  redis_host: "localhost"          # Redis host for distributed cache
+  redis_port: 6379                 # Redis port
+  redis_db: 0                      # Redis database number
+
+# Performance tuning presets
+# Uncomment one of these sections to use a preset configuration
+
+# # High Performance Preset (for powerful hardware)
+# performance_preset: "high_performance"
+# sampling:
+#   batch_size: 16
+#   cache_size: 50000
+# acceleration:
+#   use_half_precision: true
+#   max_batch_size: 16
+#   enable_torch_compile: true
+#   use_kv_cache: true
+# distributed:
+#   world_size: 4
+#   load_balancing_strategy: "least_loaded"
+
+# # Memory Efficient Preset (for limited memory)
+# performance_preset: "memory_efficient"
+# sampling:
+#   batch_size: 2
+#   cache_size: 1000
+# acceleration:
+#   use_half_precision: true
+#   gradient_checkpointing: true
+#   offload_to_cpu: true
+#   max_batch_size: 2
+# cache:
+#   max_memory_mb: 100.0
+
+# # Quality Preset (for best output quality)
+# performance_preset: "quality"
+# sampling:
+#   temperature: 0.7
+#   top_k: 100
+#   top_p: 0.95
+#   repetition_penalty: 1.2
+#   batch_size: 4
+# acceleration:
+#   dynamic_batching: false
+#   max_batch_size: 1
+
+# # Speed Preset (for fastest inference)
+# performance_preset: "speed"
+# sampling:
+#   temperature: 1.0
+#   top_k: 20
+#   top_p: 0.8
+#   batch_size: 32
+# acceleration:
+#   use_half_precision: true
+#   enable_torch_compile: true
+#   max_batch_size: 32
+#   batch_timeout_ms: 10
