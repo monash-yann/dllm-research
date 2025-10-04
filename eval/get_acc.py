@@ -134,7 +134,8 @@ def get_acc_all():
             get_acc(directory)
 
 def main():
-    directory = "eval/outputs/LLaDA-8B-Instruct/gsm8k_gen_256_steps_256_temp_0.0test"
+    # directory = "eval/outputs/LLaDA-8B-Instruct/gsm8k_gen_256_steps_256_temp_0.0test_N2E10"
+    directory = "eval/outputs/LLaDA-8B-Instruct/gsm8k_gen_128_steps_128_temp_0.0test"
     get_acc(directory)
 
 if __name__ == "__main__":

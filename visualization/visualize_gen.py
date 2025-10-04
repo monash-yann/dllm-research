@@ -3,7 +3,7 @@ import warnings
 from visualizer import get_local
 
 from datasets import load_dataset
-from sampler.Sampler import MRSampler
+from sampler.Sampler import MRSampler, MRSamplerConfig, GenerateOutput
 from sampler.utils import decode_outputs
 from utils import *
 import os
@@ -47,8 +47,13 @@ def run_gen_until(
         input_ids = tokenizer(prompt)['input_ids']
         input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
 
-        out, outputs, confidences, transfer_idxs, phase_states, exploration_intervals \
-            = sampler.generate(input_ids, gen_length=gen_length, max_steps=max_steps)
+        OUT: GenerateOutput = sampler.generate(input_ids, gen_length=gen_length, max_steps=max_steps)
+        out = OUT.out
+        outputs = OUT.outputs
+        phase_states = OUT.phase_states
+        exploration_intervals = OUT.exploration_intervals
+        confidences = OUT.confidences
+        transfer_idxs = OUT.transfer_idxs
 
         print(f"prompt_{i} decoded over for {output_dir}/prompt_{i}")
         actual_steps = len(outputs)
@@ -181,7 +186,7 @@ def run_gen_until(
         # 清空已处理过的attention_map，为下一个prompt做准备
         if key in cache:
           cache[key] = []
-    print(f"{len(prompts)} promtps over. avg steps reduced: {steps_for_all / m():.2f}X")
+    print(f"{len(prompts)} promtps over. avg steps reduced: {steps_for_all / len(prompts):.2f}X")
 
 
 if __name__ == "__main__":
@@ -195,26 +200,22 @@ if __name__ == "__main__":
         gsm8k_shot_prompts= f.readlines()
 
     model_path = "../models/LLaDA-8B-Instruct"
-    model_params = {
-        'cfg_scale':  0.0,
-        'temperature': 0.0,
-        # Exploration phase config
-        'max_exploration_steps': 5,
-        'N': 2,
-        'M': 3,
-        'exploration_threshold': 0.15,
-        # Acceleration phase config
-        'acceleration_threshold': 0.8,
-        'acceleration_low_threshold': 0.6,
-        'acceleration_factor': 1.0,
-        'min_k': 2,
-        # Mop-up phase config
-        'mopup_gate_ratio': 0.9,
-        'max_mopup_steps': 10,
-        'mopup_speed': 2,
-    }
+    config = MRSamplerConfig(
+        cfg_scale=0.0,
+        temperature=0.0,
+        max_exploration_steps=10,
+        exploration_N=2,
+        exploration_M=3,
+        exploration_threshold=0.05,
+        acceleration_threshold=0.8,
+        acceleration_low_threshold=0.6,
+        acceleration_factor=0.6,
+        max_mopup_steps=10,
+        mopup_gate_ratio=0.9,
+        mopup_speed=2
+    )
     # 用户传入的kwargs覆盖默认参数
-    sampler = MRSampler.from_path(model_path, device=device, torch_dtype=torch.bfloat16, **model_params)
+    sampler = MRSampler.from_path(model_path, config=config, device=device, torch_dtype=torch.bfloat16)
 
     # max_exploration_steps_list = [3, 10, 20]
     # for max_exploration_steps in max_exploration_steps_list:
@@ -230,15 +231,16 @@ if __name__ == "__main__":
     #     )
 
     sampler.max_exploration_steps = 10
-    exploration_N_list = [1, 5]
-    for exploration_N in exploration_N_list:
-        sampler.N = exploration_N
+    sampler.exploration_N = 2
+    exploration_thresholds = [0.05, 0.15, 0.3, 0.5]
+    for et in exploration_thresholds:
+        sampler.exploration_threshold = et
         run_gen_until(
             sampler=sampler,
             prompts=gsm8k_shot_prompts[:5],
             max_steps=256,
             gen_length=256,
-            output_dir=f"./imgs/Test/gsm8k_s256/N{exploration_N}E20_min0.25",
+            output_dir=f"./imgs/Test/gsm8k_s256/N{sampler.exploration_N}E{sampler.max_exploration_steps}_ET{et}_min0.25",
             console_show=False, file_save=True, vis_overall=True, vis_attn_map=False
         )
 

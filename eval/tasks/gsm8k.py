@@ -66,7 +66,7 @@ class GSM8KDataset(torch.utils.data.Dataset):
 
     def load_few_shot_examples(self):
         if isinstance(self.dataset, GSM8KDataset):
-            train_data = load_dataset("../dataset/openai/gsm8k", "main", split="train")
+            train_data = load_dataset("openai/gsm8k", "main", split="train")
             examples = random.sample(range(len(train_data)), self.num_examples)
             return [train_data[example] for example in examples]
         else:

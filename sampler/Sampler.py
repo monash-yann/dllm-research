@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 from torch import Tensor
 
 import torch
@@ -11,6 +11,59 @@ from transformers import AutoTokenizer, AutoModel, PreTrainedModel, PreTrainedTo
 from datasets import load_dataset
 
 from sampler.utils import add_gumbel_noise, get_num_transfer_tokens
+from dataclasses import dataclass, fields, asdict, field
+
+
+@dataclass
+class GenerationMetrics:
+    """用于存储单次生成过程的性能指标"""
+    use_seconds: float
+    use_steps: int
+    n_gen_tokens: int
+    tokens_per_second: float
+    step_reduction_ratio: float
+
+@dataclass
+class MRSamplerConfig:
+    """
+    用于存储 MRSampler 所有超参数的数据结构。
+    """
+    # Model forward config
+    cfg_scale: float = 0.0
+    temperature: float = 0.0
+    # Special token ids
+    mask_id: int = 126336
+    endoftext_id: int = 126081
+    eot_id: int = 126348
+    # Exploration phase config
+    max_exploration_steps: int = 10
+    exploration_N: int = 2
+    exploration_M: int = 3
+    exploration_threshold: float = 0.15
+    # Acceleration phase config
+    acceleration_threshold: float = 0.8
+    acceleration_low_threshold: float = 0.6
+    acceleration_factor: float = 1
+    min_k: int = 2
+    # Mop-up phase config
+    mopup_gate_ratio: float = 0.9
+    max_mopup_steps: int = 10
+    mopup_speed: int = 2
+    # Generation general config
+    model_max_genlength: int = 2048
+    model_max_steps: int = 2048
+
+@dataclass
+class GenerateOutput:
+    """封装 `generate` 函数的所有返回结果"""
+    out: torch.Tensor
+    metrics: GenerationMetrics
+    # 以下为用于调试和分析的详细过程数据，默认为空列表，以防不需要时占用内存
+    outputs: List[np.ndarray] = field(default_factory=list)
+    confidences: List[np.ndarray] = field(default_factory=list)
+    transfer_idxs: List[np.ndarray] = field(default_factory=list)
+    phase_states: List= field(default_factory=list)
+    exploration_intervals: List = field(default_factory=list)
 
 
 class MRSampler:
@@ -24,65 +77,27 @@ class MRSampler:
             self,
             model: PreTrainedModel,
             tokenizer: PreTrainedTokenizer,
-            # Generation general config
-            model_max_genlength: int = 2048,
-            model_max_steps: int = 2048,
-            # Special token ids
-            mask_id: int = 126336,
-            endoftext_id: int = 126081,
-            eot_id: int = 126348,
-            # Model forward config
-            cfg_scale: float = 0.0,
-            temperature: float = 0.0,
-            # Exploration phase config
-            max_exploration_steps: int = 5,
-            N: int = 2,
-            M: int = 2,
-            exploration_threshold: float = 0.2,
-            # Acceleration phase config
-            acceleration_threshold: float = 0.85,
-            acceleration_low_threshold: float = 0.5,
-            acceleration_factor: float = 1.0,
-            min_k: int = 2,
-            # Mop-up phase config
-            mopup_gate_ratio: float = 0.9,
-            max_mopup_steps: int = 20,
-            mopup_speed: int = 2,
+            config: MRSamplerConfig,
             # position-step weight encoding config
             position_weight_initial_min: float = 0.2,
     ) -> None:
 
         self.model = model
         self.tokenizer = tokenizer
+        self.config = config
         self.device = model.device
-        # generating configs
-        self.model_max_genlength = model_max_genlength
-        self.model_max_steps = model_max_steps
-        self.mask_id = mask_id
-        self.endoftext_id = endoftext_id
-        self.eot_id = eot_id
-        self.cfg_scale = cfg_scale
-        self.temperature = temperature
-        # hyperparameters
-        self.max_exploration_steps = max_exploration_steps
-        self.N = N
-        self.M = M
-        self.exploration_threshold = exploration_threshold
-        self.mopup_gate_ratio = mopup_gate_ratio
-        self.acceleration_threshold = acceleration_threshold
-        self.acceleration_low_threshold = acceleration_low_threshold
-        self.acceleration_factor = acceleration_factor
-        self.min_k = min_k
-        self.max_mopup_steps = max_mopup_steps
-        self.mopup_speed = mopup_speed
+        # binding configs to sampler
+        for field in fields(config):
+            print(f"{field.name}: {getattr(config, field.name)}")
+            setattr(self, field.name, getattr(config, field.name))
 
     @classmethod
     def from_path(
             cls,
             model_path: str,
-            device: str = 'cuda:0',
+            config: MRSamplerConfig,
+            device: str | None = None,
             torch_dtype: torch.dtype = torch.bfloat16,
-            **kwargs
     ):
         print(f"Loading model and tokenizer from path: {model_path}")
 
@@ -90,14 +105,17 @@ class MRSampler:
             model_path,
             trust_remote_code=True,
             torch_dtype=torch_dtype
-        ).to(device).eval()
+        )
+        if device is not None:
+            model.to(device=device)
+        model.eval()
 
         tokenizer = AutoTokenizer.from_pretrained(
             model_path,
             trust_remote_code=True
         )
 
-        return cls(model=model, tokenizer=tokenizer, **kwargs)
+        return cls(model=model, tokenizer=tokenizer, config=config)
 
     def _precompute_positional_weights(
         self,
@@ -187,17 +205,16 @@ class MRSampler:
             self,
             x: Tensor,
             prompt_index: Tensor,
-            position_weights: Tensor,
+            position_weights: Tensor = None,
             EA_idx: int = 0,
             current_step: int = 0
     ):
         """
         探索阶段：寻找多个高置信度区间
-        N: 要寻找的区间数量
-        M: 扩张时允许的最大连续失败次数
+        exploration_N: 要寻找的区间数量
+        exploration_M: 扩张时允许的最大连续失败次数
         threshold: 置信度阈值
         """
-
         # print("--- 进入exploration阶段 ---")
         memory_intervals = []  # 之前轮探索得到的intervals [(start1, end1), (start2, end2),...]
         prompt_len = prompt_index.sum(dim=1).item()
@@ -209,11 +226,14 @@ class MRSampler:
         transfer_idxs = []
         history_intervals = []
 
-        consecutive_sameness = 0
+        no_advance_n = 0
         for exp_step in range(self.max_exploration_steps):
+
             x0, confidence = self._model_forward(x, prompt_index)
+
             # inserting positional weights
-            confidence[:, prompt_len:] = confidence[:, prompt_len:] * position_weights[current_step]
+            if position_weights is not None:
+                confidence[:, prompt_len:] = confidence[:, prompt_len:] * position_weights[current_step]
             # 2. 寻找、扩张、合并区间 (这里的逻辑来自我们上一轮的实现)
             # 2.1 寻找种子点
             conf_temp = confidence.clone()
@@ -223,38 +243,31 @@ class MRSampler:
                 mid_pred_point = prompt_len + (x.shape[1] - prompt_len) // 2
                 invalid_mask |= ((torch.arange(x0.shape[1], device=x0.device) < mid_pred_point).unsqueeze(0)) & ((x0 == self.eot_id) | (x0 == self.endoftext_id))
             conf_temp[invalid_mask] = -np.inf
-            select_N = min((~invalid_mask).sum().item(), self.N)    # mask且结果不是在前半段的EOT的位置数量
+            select_N = min((~invalid_mask).sum().item(), self.exploration_N)    # mask且结果不是在前半段的EOT的位置数量
             if select_N == 0:
                 break
 
             _, seed_indices = torch.topk(conf_temp, k=select_N, dim=1)      # (b, l)
 
-            # NMS抑制所有种子点选到同一区间
-            seed_indices = [[]]
+            # soft-NMS式选seed点
+            seed_indices = [[] for _ in range(conf_temp.shape[0])]
             for b in range(conf_temp.shape[0]):
-                conf_b = conf_temp[b].clone()  # 创建一个副本以进行修改
-                # 进行N轮NMS抑制选择
+                conf_b = conf_temp[b].clone()
+                idxs = torch.arange(conf_b.shape[0], device=conf_b.device, dtype=torch.float32)
+                # 使用基于高斯函数的soft-NMS来尽可能选到距离远的点
                 for i in range(select_N):
                     select_idx = torch.argmax(conf_b).item()
-                    # 无点可选提前退出（如N=2，且这两个点距离<M）
-                    if conf_b[select_idx] <= -np.inf:
+                    # 无点可选提前退出（如N=2，且这两个点距离<exploration_M）
+                    if conf_b[select_idx] <= 0:
                         select_N = i
                         break
                     # 选择经抑制处理后置信度次高的点
                     seed_indices[b].append(select_idx)
-                    # 若该点是孤立点，则抑制该点及其周围 M 范围内的邻居；若该点已在某个区间内，则抑制整个区间
-                    found_interval_in_memory = None
-                    for idx, (start, end) in enumerate(memory_intervals):
-                        if start <= select_idx <= end:
-                            found_interval_in_memory = (start, end)  # (区间编号, 起始, 结束)
-                            break
-                    if found_interval_in_memory is not None:
-                        nms_start = max(0, found_interval_in_memory[0] - self.M)
-                        nms_end = min(conf_b.shape[0], found_interval_in_memory[1] + self.M)
-                    else:
-                        nms_start = max(0, select_idx - self.M)
-                        nms_end = min(conf_b.shape[0], select_idx + self.M)
-                    conf_b[nms_start: nms_end+1] = -np.inf
+                    # 使用高斯函数抑制近距离权重，使得下次倾向于选择远离当前位置的点
+                    distances = torch.abs(idxs - select_idx)
+                    sigma = (conf_b.shape[0] - prompt_len) / self.exploration_N / 2
+                    gauss_weights = 1 - torch.exp(-torch.pow(distances, 2) / (sigma ** 2))
+                    conf_b = conf_b * gauss_weights
             seed_indices = torch.Tensor(seed_indices).type(torch.long).to(x.device)
 
             # 2.2 扩张 (方法1: 尽可能寻找多的区间)
@@ -291,7 +304,7 @@ class MRSampler:
                             consecutive_failures = 0
                         else:
                             consecutive_failures += 1
-                            if consecutive_failures > self.M:
+                            if consecutive_failures > self.exploration_M:
                                 break
                     # 向右扩张...
                     consecutive_failures = 0
@@ -303,14 +316,10 @@ class MRSampler:
                             consecutive_failures = 0
                         else:
                             consecutive_failures += 1
-                            if consecutive_failures > self.M:
+                            if consecutive_failures > self.exploration_M:
                                 break
                     # 本轮收集到区间: memory中原对应区间的拓展 + 本轮探索新开区间
                     intervals.append((left, right)) # 左右双闭 [left, right]
-            if not exist_new_seed:
-                consecutive_sameness += 1
-            else:
-                consecutive_sameness = 0
 
             # 2.3 合并 (收集到区间 + memory中未在本轮中继续拓展的区间)
             old_intervals = [interval for idx, interval in enumerate(memory_intervals) if idx not in found_indices_in_memory]
@@ -322,9 +331,6 @@ class MRSampler:
             x[transfer_index] = x0[transfer_index]
             # x.scatter_(dim=1, src=x0, index=seed_indices) 天坑！！！ scatter方法的意思是从src中顺序地选择赋入x的index位置处。index指定的是x中要被赋值的位置而不是在src中要被选择用于赋值的位置。
 
-            # 4. 历史区间更新
-            memory_intervals = merged_intervals
-
             # 研究用：中间状态收集
             steps_used += 1
             # print(f"types: x0-{x0.dtype}, confidence-{confidence.dtype}, transfer_index: {transfer_index.dtype}")
@@ -332,23 +338,31 @@ class MRSampler:
             confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
             transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
             history_intervals.append([(start - prompt_len, end - prompt_len) for start, end in merged_intervals])
-            # print(f"探索步骤 {exp_step + 1}: 找到区间 {merged_intervals}")
+            print(f"探索步骤 {exp_step + 1}: 找到区间 {merged_intervals}")
+
+            # 4. 历史区间更新
+            advance_threshold = 0.1
+            exist_intervals_advance = (
+                    exp_step == 0 or
+                    len(merged_intervals) != len(memory_intervals) or
+                    any((merged_intervals[i][1] - merged_intervals[i][0] + 1) / (memory_intervals[i][1] - memory_intervals[i][0] + 1) >= 1 + advance_threshold for i in range(len(merged_intervals)))
+            )
+
+            memory_intervals = merged_intervals
 
             # 5. 探索阶段提前结束判断
-            if consecutive_sameness >= 2:
-                has_effective_expansion = False
-                for i in range(len(merged_intervals)):
-                    curr_start, curr_end = merged_intervals[i]
-                    prev_start, prev_end = memory_intervals[i]
-                    if 1.0 * (curr_end - curr_start + 1) / (prev_end - prev_start + 1) > 0.05:
-                        has_effective_expansion = True
-                if not has_effective_expansion: #若无新区间且旧区间增长<=0.05，则提前结束探索
+            if exist_new_seed or exist_intervals_advance:
+                no_advance_n = 0
+            else:
+                no_advance_n += 1
+                # 后续可改为区间熵不变
+                if no_advance_n >= 2:
                     break
 
         # 基于密度的再次扩散
         # print(f"探索阶段找到原始区间: {memory_intervals}")
         desities = [conf_temp[:, start:end+1].nan_to_num(neginf=0).mean().item() for start, end in memory_intervals]
-        expected_deltas = [int(desities[i] * (end - start + 1) // 2) for i, (start, end) in enumerate(memory_intervals)]
+        expected_deltas = [int(desities[i] * (end - start + 1) * 2 // 3) for i, (start, end) in enumerate(memory_intervals)]
         density_expansion_intervals = []  # [(new_left, new_right), ...]
         for i, (start, end) in enumerate(memory_intervals):
             delta = expected_deltas[i]
@@ -371,7 +385,7 @@ class MRSampler:
 
         history_intervals.append([(start - prompt_len, end - prompt_len) for start, end in density_expansion_intervals])
 
-        # print(f"边界扩张后找到最终区间: {memory_intervals}")
+        print(f"边界扩张后找到最终区间: {memory_intervals}")
         return x, memory_intervals, steps_used, outputs, confidences, transfer_idxs, history_intervals
 
     def acceleration_phase(
@@ -533,7 +547,9 @@ class MRSampler:
         prompt,
         gen_length=256,
         max_steps=256,
-    ):
+        enable_position_weights=True,
+        enable_metrics=True,
+    ) -> GenerateOutput:
         """
         实现“多区域并行置信度驱动解码”思路的主函数。
         """
@@ -547,10 +563,12 @@ class MRSampler:
         prompt_index = (x != self.mask_id)
 
         # initalize positional weights
-        position_weights = self._precompute_positional_weights(
-            max_steps=max_steps, gen_length=gen_length, max_weight=1, initial_min_weight=0.25,
-            device=self.model.device, dtype=torch.float32
-        )
+        position_weights = None
+        if enable_position_weights:
+            position_weights = self._precompute_positional_weights(
+                max_steps=max_steps, gen_length=gen_length, max_weight=1, initial_min_weight=0.25,
+                device=self.model.device, dtype=torch.float32
+            )
 
         # 主循环 (探索与加速)
         outputs = []
@@ -572,7 +590,7 @@ class MRSampler:
 
             # ① 探索阶段
             x, intervals, exploration_steps, exploration_outputs, exploration_confidences, exploration_transfer_idxs, history_intervals \
-                = self.exploration_phase(x, prompt_index, position_weights, EA_idx, accumulated_steps)
+                = self.exploration_phase(x, prompt_index, position_weights=position_weights, EA_idx=EA_idx, current_step=accumulated_steps)
 
             # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Exploration")
             outputs.extend(exploration_outputs)
@@ -616,19 +634,29 @@ class MRSampler:
         # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Mopup")
 
         total_steps = accumulated_steps + mopup_steps
+
+        # compute metrics
         end_time = time.perf_counter()
         duration = end_time - start_time
-        actual_steps = total_steps
 
-        print(f"The whole decoding ends!")
-        print(f"Use steps: {actual_steps}")
-        if actual_steps > 0:
-            print(f"Reduced steps: {max_steps / actual_steps:.2f}X")
-            print(f"Tokens per second: {max_steps / duration:.2f}")
-        print(f"Used time: {duration:.2f}s")
+        metrics = GenerationMetrics(
+            use_seconds=duration,
+            use_steps=total_steps,
+            n_gen_tokens=gen_length,
+            tokens_per_second=(gen_length / duration) if duration > 0 else 0,
+            step_reduction_ratio=(gen_length / total_steps) if total_steps > 0 else 0
+        )
+        print(metrics)
 
-        return x, outputs, confidences, transfer_idxs, phase_states, exploration_intervals
-
+        return GenerateOutput(
+            out=x,
+            outputs=outputs,
+            confidences=confidences,
+            transfer_idxs=transfer_idxs,
+            phase_states=phase_states,
+            exploration_intervals=exploration_intervals,
+            metrics=metrics,
+        )
 
 def main():
     device = 'cuda:0'
@@ -640,20 +668,27 @@ def main():
     prompts = gsm8k_dataset['test']['question'][0:3]
 
     # --- 使用类进行生成 ---
+    config = MRSamplerConfig(
+        cfg_scale=0.0,
+        temperature=0.0,
+        max_exploration_steps=10,
+        exploration_N=2,
+        exploration_M=3,
+        exploration_threshold=0.15,
+        acceleration_threshold=0.8,
+        acceleration_low_threshold=0.6,
+        acceleration_factor=0.6,
+        max_mopup_steps=10,
+        mopup_gate_ratio=0.9,
+        mopup_speed=2
+    )
+
     max_gen_steps = 256
     sampler = MRSampler.from_path(
         model_path=model_path,
-        device='cuda:0',
-        cfg_scale=0.,
-        temperature=0,
-        max_exploration_steps=5,
-        N=2,
-        M=3,
-        exploration_threshold=0.1,
-        acceleration_threshold=0.8,
-        acceleration_low_threshold=0.5,
-        max_mopup_steps=10,
-        mopup_gate_ratio=0.85,
+        device=device,
+        config=config,
+        torch_dtype=torch.bfloat16
     )
 
     for i, prompt_text in enumerate(prompts):
@@ -664,10 +699,9 @@ def main():
         prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
         input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
 
+        OUT = sampler.generate(input_ids, gen_length=max_gen_steps, max_steps=max_gen_steps)
 
-        # 2. 调用 generate 方法
-        out, outputs, confidences, transfer_idxs, phase_states, exploration_intervals \
-            = sampler.generate(input_ids, gen_length=max_gen_steps, max_steps=max_gen_steps)
+        out = OUT.out
 
         ans = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
         print(f"Prompt_{i}'s answer: {ans}\n")

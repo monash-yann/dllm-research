@@ -237,7 +237,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    num_evals = {"gsm8k": 100, "math": -1, "svamp": -1, "countdown": -1}
+    num_evals = {"gsm8k": 2, "math": -1, "svamp": -1, "countdown": -1}
 
     sampler = MRSampler.from_path(
         model_path=args.model_path,
@@ -245,7 +245,7 @@ if __name__ == "__main__":
         cfg_scale=args.cfg_scale,
         temperature=args.temperature,
         max_exploration_steps=10,
-        N=5,
+        N=2,
         M=3,
         exploration_threshold=0.15,
         acceleration_threshold=0.8,
@@ -254,7 +254,8 @@ if __name__ == "__main__":
         mopup_gate_ratio=0.9,
     )
 
-    output_dir = os.path.abspath(args.output_dir)
+    # output_dir = os.path.abspath(f"{args.output_dir}_N2E10")
+    output_dir = os.path.abspath(f"{args.output_dir}_test")
 
     print(f"Sampling Args: {args}")
     print(f"Result will be saved to path: {output_dir}")

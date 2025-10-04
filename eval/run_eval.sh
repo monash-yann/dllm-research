@@ -13,7 +13,7 @@ model_path="/homebck/home/xiangzhong_guest/LLADA/llada_sampling_system/models/LL
 # 【改动 1】: 从模型路径自动获取模型名称
 model_name=$(basename "$model_path")
 
-GPU_IDS=(0 1 2)
+GPU_IDS=(1 2)
 MASTER_PORT=8086
  
 # 评估任务和生成长度的组合，与.py中哈希表的key对应
@@ -36,7 +36,6 @@ fi
 GPU_LIST=$(IFS=,; echo "${GPU_IDS[*]}")
 NUM_GPUS=${#GPU_IDS[@]}
 echo "used GPU: $GPU_LIST (nproc_per_node=$NUM_GPUS)"
-
 
 # --- do evaluation ---
 # go to the root directory of the project
@@ -70,6 +69,7 @@ for task in "${TASKS[@]}"; do
         --output_dir $OUTPUT_DIR \
         --model_path $model_path \
         --model_name $model_name \
+        --few_shot 4 \
 
   done
 done
