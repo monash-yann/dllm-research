@@ -1,16 +1,16 @@
-import warnings
+import numpy as np
+import torch
 
 from visualizer import get_local
-
 from datasets import load_dataset
-from sampler.Sampler import MRSampler, MRSamplerConfig, GenerateOutput
-from sampler.utils import decode_outputs
-from utils import *
 import os
 import shutil
 from matplotlib import patches, gridspec
 import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
+
+from sampler.MRSampler import MRSampler, MRSamplerConfig, GenerateOutput
+from sampler.utils import decode_outputs
+from utils import visualize_overall_steps, plot_decoding_history_on_ax, plot_single_attention_map_on_ax
 
 
 # 绘制控制函数:
@@ -177,7 +177,7 @@ def run_gen_until(
 
 if __name__ == "__main__":
     print(f"connected to server, current path: {os.path.abspath(__file__)}")
-    device = 'cuda:1'
+    device = 'cuda:0'
 
     # 提示词替换，与4-shot的行为保持一致
     few_shot_filename = "../prompts/gsm8k_shot.txt"
@@ -215,11 +215,11 @@ if __name__ == "__main__":
     sampler.exploration_N = 2
     # exploration_thresholds = [0.05, 0.15, 0.3, 0.5]
     # exploration_thresholds = [0.2, 0.25]  -> No Positionals Weights下, 0.25表现最好
-    exploration_thresholds = [0.25]
+    exploration_thresholds = [0.25, 0.1, 0.15, 0.35]
     for et in exploration_thresholds:
         sampler.exploration_threshold = et
         # output_dir = f"./imgs/Test/gsm8k_s256/N{sampler.exploration_N}E{sampler.max_exploration_steps}_ET{et}_DPimin{sampler.initial_min_weight}_V1"
-        output_dir = f"./imgs/Test/gsm8k_s256/N{sampler.exploration_N}E{sampler.max_exploration_steps}_ET{et}_APM{sampler.acceleration_parallel_method}_V1"
+        output_dir = f"imgs/Test/gsm8k_s256/N{sampler.exploration_N}E{sampler.max_exploration_steps}_ET{et}_APM{sampler.acceleration_parallel_method}_V1"
         run_gen_until(
             sampler=sampler,
             prompts=gsm8k_prompts[:3],

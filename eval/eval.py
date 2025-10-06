@@ -15,7 +15,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModel
 from peft import PeftModel
 
-from sampler.Sampler import MRSampler
+from sampler.MRSampler import MRSampler
 from eval.tasks.gsm8k import GSM8KDataset, parse_gsm_answer
 from eval.tasks.math500 import MATH500Dataset, parse_math_answer
 

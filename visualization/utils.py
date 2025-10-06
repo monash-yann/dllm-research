@@ -12,7 +12,7 @@ from matplotlib.colors import Normalize
 
 import os
 import shutil
-from sampler.Sampler import MRSampler
+from sampler.MRSampler import MRSampler
 
 def sanitize_for_matplotlib(text):
     """更全面地转义 Matplotlib mathtext 的特殊字符"""

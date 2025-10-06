@@ -1,12 +1,6 @@
 '''
 This file is inspired by the code from https://github.com/ML-GSAI/SMDM
 '''
-import json
-import os
-import sys
-from dataclasses import fields, asdict
-from typing import List
-
 import accelerate
 import torch
 import re
@@ -22,8 +16,7 @@ from lm_eval.api.registry import register_model
 from tqdm import tqdm
 
 from transformers import AutoTokenizer, AutoModel
-from sampler.MRSampler import MRSampler, MRSamplerConfig, GenerateOutput, GenerationMetrics
-
+from generate import generate
 
 
 def set_seed(seed):
@@ -34,34 +27,44 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-
-
-@register_model("llada_sampler")
+@register_model("llada_dist")
 class LLaDAEvalHarness(LM):
-    # _sampler = None
-
     def __init__(
-            self,
-            model_path: str = './model_cache',
-            device="cuda",
-            mc_num=128,
-            batch_size=1,
-            steps=256,
-            gen_length=256,
-            block_length=256,
-            **kwargs,
+        self,
+        model_path='./model_cache',
+        mask_id=126336,
+        max_length=4096,
+        batch_size=32,
+        mc_num=128,
+        is_check_greedy=True,
+        cfg=0.,
+        steps=256,
+        gen_length=256,
+        block_length=256,
+        remasking='low_confidence',
+        device="cuda",
+        **kwargs,
     ):
         '''
         Args:
+            model_path: LLaDA-8B-Base model path.
+            mask_id: The token id of [MASK] is 126336.
+            max_length: the max sequence length.
+            batch_size: mini batch size.
+            mc_num: Monte Carlo estimation iterations
+            is_check_greedy: For certain metrics like LAMBADA, the evaluation requires the model to verify whether the answer
+                             is generated through greedy sampling conditioned on the prompt (note that this differs from conditional
+                             generation). We implement this verification through the suffix_greedy_prediction() function, which
+                             returns a True/False judgment used for accuracy calculation.
+                             When is_check_greedy is set to True, the lm-evaluation-harness library automatically invokes this function.
+                             However, since none of the metrics in the LLaDA paper (https://arxiv.org/abs/2502.09992) require this functionality,
+                             we recommend setting is_check_greedy to False. This configuration causes suffix_greedy_prediction() to return False
+                             by default, significantly accelerating the evaluation process.
+            cfg_scale: Unsupervised classifier-free guidance scale.
         '''
-
         super().__init__()
 
-        print(f"!!! [DEBUG]: Running evaluation with args: \n{kwargs}")
-        print(f"mc_num: {mc_num}\n"
-              f"batch_size: {batch_size}\n"
-              f"steps: {steps}\n"
-              f"gen_length: {gen_length}\n")
+        print(f"!!! DEBUG: Running evaluation with mc_num = {mc_num}")
 
         # 设置多gpu框架
         accelerator = accelerate.Accelerator()
@@ -69,55 +72,38 @@ class LLaDAEvalHarness(LM):
             self.accelerator = accelerator
         else:
             self.accelerator = None
+
+        model_kwargs = {}
         if self.accelerator is not None:
-            print(f"device_map: {self.accelerator.device}")
+            model_kwargs.update({'device_map': {'': f'{self.accelerator.device}'}})
 
-        sampler_config_fields = {f.name for f in fields(MRSamplerConfig)}
-        sampler_kwargs = {
-            key: kwargs[key]
-            for key in sampler_config_fields
-            if key in kwargs
-        }
-        sampler_config = MRSamplerConfig(**sampler_kwargs)
+        self.model = AutoModel.from_pretrained(model_path, trust_remote_code=True, torch_dtype=torch.bfloat16, **model_kwargs)
+        self.model.eval()
 
-        self.sampler = MRSampler.from_path(
-            model_path,
-            config=sampler_config
-        )
-        self.sampler.model.eval()
-
-        # assign model to devices by accelerator
+        self.device = torch.device(device)
         if self.accelerator is not None:
-            self.sampler = self.accelerator.prepare(self.sampler)
+            self.model = self.accelerator.prepare(self.model)
+            self.device = torch.device(f'{self.accelerator.device}')
             self._rank = self.accelerator.local_process_index
             self._world_size = self.accelerator.num_processes
-        # else:
-        #     self.sampler.model = self.sampler.model.to(device)
+        else:
+            self.model = self.model.to(device)
 
-        self.sampler.model = self.sampler.model.to(device)
-        self.sampler.model.eval()
-        self.device = self.sampler.model.device  # 从最终的模型获取最准确的设备信息
+        self.mask_id = mask_id
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
         self.mc_num = mc_num
         self.batch_size = int(batch_size)
         assert mc_num % self.batch_size == 0
         self.sampling_eps = 0.
-        self.gen_length = gen_length
+        self.max_length = max_length
+        self.is_check_greedy = is_check_greedy
+
+        self.cfg = cfg
         self.steps = steps
-        # self.block_length = block_length
-
-        # metrics
-        # self.total_use_seconds = 0
-        # self.total_use_steps = 0
-        # self.total_n_gen_tokens = 0
-        self.overall_metrics: List[GenerationMetrics] = []
-        self.output_dir = kwargs['output_dir']
-
-        # 将不在主线程的标准输出和标准错误重定向到空设备
-        if not self.accelerator.is_main_process:
-            f = open(os.devnull, 'w')
-            sys.stdout = f
-            sys.stderr = f
+        self.gen_length = gen_length
+        self.block_length = block_length
+        self.remasking = remasking
 
     @property
     def rank(self):
@@ -216,19 +202,14 @@ class LLaDAEvalHarness(LM):
             continuation = context[-n_spaces:] + continuation
             context = context[:-n_spaces]
 
-        whole_enc = self.sampler.tokenizer(context + continuation)["input_ids"]
-        context_enc = self.sampler.tokenizer(context)["input_ids"]
+        whole_enc = self.tokenizer(context + continuation)["input_ids"]
+        context_enc = self.tokenizer(context)["input_ids"]
 
         context_enc_len = len(context_enc)
         continuation_enc = whole_enc[context_enc_len:]
 
         return context_enc, continuation_enc
 
-    # PPL
-    def loglikelihood_rolling(self, requests):
-        raise NotImplementedError
-
-    # multiple choices
     def loglikelihood(self, requests):
         def _tokenize(e):
             prefix, target = self._encode_pair(e["prefix"], e["target"])
@@ -239,6 +220,7 @@ class LLaDAEvalHarness(LM):
                 "target": target,
             }
 
+        ds = []
         ds = [{"prefix": req.args[0], "target": req.args[1]} for req in requests]
         ds = Dataset.from_list(ds)
         ds = ds.map(_tokenize)
@@ -247,12 +229,12 @@ class LLaDAEvalHarness(LM):
 
         assert max(prompt_len) <= 4096
 
-        on_main_process = self.accelerator is None or self.accelerator.is_main_process
         out = []
         with torch.no_grad():
-            for i, elem in enumerate(tqdm(ds, desc="Computing likelihood..."), disable=on_main_process):
+            for i, elem in enumerate(tqdm(ds, desc="Computing likelihood...")):
                 prefix = elem["prefix"]
                 target = elem["target"]
+
 
                 ll = self.get_loglikelihood(prefix, target)
 
@@ -262,18 +244,13 @@ class LLaDAEvalHarness(LM):
         torch.cuda.empty_cache()
         return out
 
-    # fixed answer
+    def loglikelihood_rolling(self, requests):
+        raise NotImplementedError
+
     def generate_until(self, requests: list[Instance]):
-        tokenizer = self.sampler.tokenizer
-
-
         def _tokenize(e):
-            m = [{"role": "user", "content": e["question"]}]
-            prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
-            input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids
-            # print(f"{'='*20} input_ids.shape: {input_ids.shape} {'='*20}")
             return {
-                "input_ids": input_ids,
+                "question": self.tokenizer(e["question"])["input_ids"],
                 "question_text": e["question"],
                 "until": e["until"],
             }
@@ -283,85 +260,33 @@ class LLaDAEvalHarness(LM):
         ds = ds.map(_tokenize)
         ds = ds.with_format("torch")
 
-        on_main_process = self.accelerator is None or self.accelerator.is_main_process
         out = []
-        for elem in tqdm(ds, desc="Generating...", disable=not on_main_process):
-            prompt = elem["input_ids"].to(self.device)
-            # print(f"\n{'=' * 20} prompt.shape: {prompt.shape} {'=' * 20}")
+        for elem in tqdm(ds, desc="Generating..."):
+            prompt = elem["question"].unsqueeze(0).to(self.device)
             stop_tokens = elem["until"]
-            stop_tokens.append(tokenizer.eos_token)
+            stop_tokens.append(self.tokenizer.eos_token)
 
-            # print('#' * 20 + f"the prompt is: {elem['question_text']}" + '#' * 20)
-            OUT: GenerateOutput = self.sampler.generate(prompt, gen_length=self.gen_length, max_steps=self.steps)
-            generated_answer = OUT.out
-            generated_answer = tokenizer.decode(generated_answer[0][prompt.shape[1]:], skip_special_tokens=False)
-            # print('#' * 20 + f"generated_answer: {generated_answer}" + '#' * 20)
+            generated_answer = generate(self.model, prompt, steps=self.steps, gen_length=self.gen_length, block_length=self.block_length,
+                                        temperature=0, cfg_scale=self.cfg, remasking=self.remasking, mask_id=self.mask_id)
+
+            generated_answer = self.tokenizer.decode(generated_answer[0][prompt.shape[1]:], skip_special_tokens=False)
+            print('#' * 20 + f"generated_answer: {generated_answer}" + '#' * 20)
             for stop_seq in stop_tokens:
-                if stop_seq in generated_answer:
-                    generated_answer = generated_answer.split(stop_seq)[0]
-            if on_main_process:
-                print('#' * 20 + f"generated_answer after spliting: {generated_answer}" + '#' * 20)
+                    if stop_seq in generated_answer:
+                        generated_answer = generated_answer.split(stop_seq)[0]
+            print('#' * 20 + f"generated_answer after spliting: {generated_answer}" + '#' * 20)
 
             # remove special tokens
-            generated_answer_ids = tokenizer(generated_answer)["input_ids"]
-            generated_answer = tokenizer.decode(generated_answer_ids, skip_special_tokens=True)
+            generated_answer_ids = self.tokenizer(generated_answer)["input_ids"]
+            generated_answer = self.tokenizer.decode(generated_answer_ids, skip_special_tokens=True)
             out.append(generated_answer)
 
-            # accumulate metrics
-            metrics = OUT.metrics
-            # self.total_use_steps += metrics.use_steps
-            # self.total_use_seconds += metrics.use_seconds
-            # self.total_n_gen_tokens += metrics.n_gen_tokens
-            self.overall_metrics.append(metrics)
 
             if self.accelerator is not None:
                 self.accelerator.wait_for_everyone()
 
         return out
 
-    def __del__(self):
-        """
-        析构函数，在评估任务结束、对象被销毁时自动调用。
-        用于聚合所有自定义指标并写入JSON文件。
-        """
-        # 仅在主进程上执行聚合和写入操作，避免多GPU时重复写入
-        overall_metrics: List[GenerationMetrics] = []
-        if self.accelerator is not None:
-            print(f"[Info] Collecting metrics......")
-            overall_metrics = self.accelerator.gather_for_metrics(self.overall_metrics)
-
-            if self._rank != 0:
-                return
-            print(f"[Info] Gathered {len(overall_metrics)} metrics in total")
-
-        if not overall_metrics:
-            print("No overall metrics were collected. Skipping report generation.")
-            return
-
-        print(f"[Info] Computing metrics......")
-        total_use_seconds = 0
-        total_use_steps = 0
-        total_n_gen_tokens = 0
-        for metric in overall_metrics:
-            total_use_seconds += metric.use_seconds
-            total_use_steps += metric.use_steps
-            total_n_gen_tokens += metric.n_gen_tokens
-
-        summary_metrics = GenerationMetrics(
-            use_seconds=total_use_seconds,
-            use_steps=total_use_steps,
-            n_gen_tokens=total_n_gen_tokens,
-            tokens_per_second=(total_n_gen_tokens / total_use_seconds) if total_use_seconds > 0 else 0,
-            step_reduction_ratio=len(overall_metrics) * self.steps / total_use_steps if total_use_steps > 0 else 0
-        )
-        metrics_report = {
-            "summary": asdict(summary_metrics),
-            "per_sample": [asdict(metric) for metric in overall_metrics]
-        }
-
-        metrics_fpath = os.path.join(self.output_dir, "overall_metrics.json")
-        with open(metrics_fpath, 'w', encoding='utf-8') as f:
-            json.dump(metrics_report, f, indent=4, ensure_ascii=False)
 
 if __name__ == "__main__":
     set_seed(1234)

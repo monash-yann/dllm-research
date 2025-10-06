@@ -11,31 +11,16 @@ from transformers import AutoTokenizer, AutoModel, PreTrainedModel, PreTrainedTo
 from datasets import load_dataset
 from visualizer import get_local
 
+from sampler.BaseSampler import BaseSampler, SamplerConfig, GenerationMetrics, GenerateOutput
 from sampler.utils import add_gumbel_noise, get_num_transfer_tokens, set_seed
 from dataclasses import dataclass, fields, asdict, field
 
 
 @dataclass
-class GenerationMetrics:
-    """用于存储单次生成过程的性能指标"""
-    use_seconds: float
-    use_steps: int
-    n_gen_tokens: int
-    tokens_per_second: float
-    step_reduction_ratio: float
-
-@dataclass
-class MRSamplerConfig:
+class MRSamplerConfig(SamplerConfig):
     """
     用于存储 MRSampler 所有超参数的数据结构。
     """
-    # Model forward config
-    cfg_scale: float = 0.0
-    temperature: float = 0.0
-    # Special token ids
-    mask_id: int = 126336
-    endoftext_id: int = 126081
-    eot_id: int = 126348
     # Exploration phase config
     max_exploration_steps: int = 10
     exploration_N: int = 2
@@ -51,29 +36,14 @@ class MRSamplerConfig:
     mopup_gate_ratio: float = 0.9
     max_mopup_steps: int = 10
     mopup_speed: int = 2
-    # Generation general config
-    model_max_genlength: int = 2048
-    model_max_steps: int = 2048
     # Positional Weights
     positional_weights_type: Literal['absolute', 'ratio', 'none'] = 'none'
     max_weight: float = 1.0
     initial_min_weight: float = 0.1
 
 
-@dataclass
-class GenerateOutput:
-    """封装 `generate` 函数的所有返回结果"""
-    out: torch.Tensor
-    metrics: GenerationMetrics
-    # 以下为用于调试和分析的详细过程数据，默认为空列表，以防不需要时占用内存
-    outputs: List[np.ndarray] = field(default_factory=list)
-    confidences: List[np.ndarray] = field(default_factory=list)
-    transfer_idxs: List[np.ndarray] = field(default_factory=list)
-    phase_states: List= field(default_factory=list)
-    exploration_intervals: List = field(default_factory=list)
 
-
-class MRSampler:
+class MRSampler(BaseSampler):
     """
         该类封装了模型、分词器、所有超参数以及生成过程的三个阶段：
         1. 探索 (Exploration): 识别并建立高置信度的生成区间。
@@ -84,48 +54,9 @@ class MRSampler:
             self,
             model: PreTrainedModel,
             tokenizer: PreTrainedTokenizer,
-            config: MRSamplerConfig,
-            # position-step weight encoding config
-            position_weight_initial_min: float = 0.2,
+            config: MRSamplerConfig
     ) -> None:
-
-        self.model = model
-        self.tokenizer = tokenizer
-        self.config = config
-        self.device = model.device
-        self.absolute_positional_weights = None
-
-        # binding configs to sampler
-        for field in fields(config):
-            print(f"{field.name}: {getattr(config, field.name)}")
-            setattr(self, field.name, getattr(config, field.name))
-
-    @classmethod
-    def from_path(
-            cls,
-            model_path: str,
-            config: MRSamplerConfig,
-            device: str | None = None,
-            torch_dtype: torch.dtype = torch.bfloat16,
-    ):
-        print(f"Loading model and tokenizer from path: {model_path}")
-
-        # get_local.activate()  # 在引入模型之前，激活装饰器
-        model = AutoModel.from_pretrained(
-            model_path,
-            trust_remote_code=True,
-            torch_dtype=torch_dtype
-        )
-        if device is not None:
-            model.to(device=device)
-        model.eval()
-
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_path,
-            trust_remote_code=True
-        )
-
-        return cls(model=model, tokenizer=tokenizer, config=config)
+        super().__init__(model, tokenizer, config)
 
     def precompute_absolute_positional_weights(
         self,
@@ -188,7 +119,6 @@ class MRSampler:
 
         return ratio_positional_weights
 
-
     def _merge_intervals(self, intervals: List[tuple[int, int]]) -> List[tuple[int, int]]:
         """
         一个辅助函数，用于合并重叠或相邻的区间。
@@ -211,30 +141,6 @@ class MRSampler:
                 merged_intervals.append((current_start, current_end))
 
         return merged_intervals
-
-    @torch.no_grad()
-    def _model_forward(
-            self,
-            x: torch.Tensor,
-            prompt_index: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if self.cfg_scale > 0.:
-            un_x = x.clone()
-            un_x[prompt_index] = self.mask_id
-            x_ = torch.cat([x, un_x], dim=0)
-            logits_batch = self.model(x_).logits
-            logits, un_logits = torch.chunk(logits_batch, 2, dim=0)
-            logits = un_logits + (self.cfg_scale + 1) * (logits - un_logits)
-        else:
-            logits = self.model(x).logits
-
-        logits_with_noise = add_gumbel_noise(logits, self.temperature)
-        x0 = torch.argmax(logits_with_noise, dim=-1)
-        p = F.softmax(logits, dim=-1)
-        x0_p = torch.gather(p, dim=-1, index=x0.unsqueeze(-1)).squeeze(-1)
-        mask_index = (x == self.mask_id)
-        confidence = torch.where(mask_index, x0_p, -np.inf)
-        return x0, confidence, x0_p
 
 
     #  core methods  #
@@ -268,9 +174,10 @@ class MRSampler:
         for exp_step in range(exp_steps):
 
             x0, confidence, org_confidence = self._model_forward(x, prompt_index)
+            current_step += 1
             steps_used += 1
             GG = False
-            # inserting positional weights
+            # mutiplying positional weights
             if self.positional_weights_type == 'absolute':
                 confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.absolute_positional_weights[current_step]
             elif self.positional_weights_type == 'ratio':
@@ -381,8 +288,7 @@ class MRSampler:
                 x[transfer_index] = x0[transfer_index]
                 # x.scatter_(dim=1, src=x0, index=seed_indices) 天坑！！！ scatter方法的意思是从src中顺序地选择赋入x的index位置处。index指定的是x中要被赋值的位置而不是在src中要被选择用于赋值的位置。
 
-                # print(f"types: x0-{x0.dtype}, confidence-{confidence.dtype}, transfer_index: {transfer_index.dtype}")
-                print(f"探索步骤 {exp_step + 1}: 找到区间 {merged_intervals}")
+                print(f"curr_step {current_step} [Exploration] exp_step {exp_step + 1}: found intervals {merged_intervals}")
 
                 # 4. 历史区间更新
                 advance_threshold = 0.1
@@ -469,6 +375,7 @@ class MRSampler:
             x: Tensor,
             prompt_index: Tensor,
             intervals: List[tuple[int, int]],
+            current_step: int
     ):
         """
         自适应加速阶段: 对探索阶段中形成的可行区间进行高速解码，直至不符合某种下限条件
@@ -482,6 +389,7 @@ class MRSampler:
 
         # 初始化状态
         prompt_len = prompt_index.sum(dim=1).item()
+        gen_length = x.shape[-1] - prompt_len
         interval_states = [{'coords': (start, end), 'status': 'active'} for start, end in intervals]
 
         # 状态收集，用于可视化
@@ -493,78 +401,105 @@ class MRSampler:
         while any(s['status'] == 'active' for s in interval_states):
             # 动态创建只包含当前要加速的区间的mask
             dynamic_accel_mask = torch.zeros_like(x, dtype=torch.bool)
-            active_intervals_found = False
+            n_active_intervals = 0
             for state in interval_states:
                 if state['status'] == 'active':
                     start, end = state['coords']
                     dynamic_accel_mask[:, start: end + 1] = True
-                    active_intervals_found = True
-            if not active_intervals_found:
+                    n_active_intervals += 1
+            if n_active_intervals == 0:
                 break
 
             # 执行一次forward并行更新
             x0, confidence, org_confidence = self._model_forward(x, prompt_index)
+            current_step += 1
             steps_used += 1
             GG = False
+
             confidence_in_active_zones = torch.where(dynamic_accel_mask, confidence, -np.inf)
+
+            # mutiplying positional weights
+            if self.positional_weights_type == 'absolute':
+                confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.absolute_positional_weights[current_step]
+            elif self.positional_weights_type == 'ratio':
+                unmasked_ratio = (x != self.mask_id).sum().item() / gen_length
+                dynamic_positional_weights = self.compute_dynamic_positional_weights(gen_length, unmasked_ratio, device=x0.device)
+                confidence[:, prompt_len:] = confidence[:, prompt_len:] * dynamic_positional_weights
+            else:
+                pass
+
             transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-
+            # do 2-strategies updating
             # TODO: 考虑在不同区间内结合各自的密度进行更新，可以基于区间密度平均(背诵vs灵感)，也可以将密度作为置信值的一部分(熟就是熟)，或二者都(数学式)
-            # for state in interval_states:
-            #     if state['status'] != 'active':
-            #         continue
-            #         
-            #     itv_start, itv_end = state['coords']
-            # 更新策略1[加速]: 并行解码策略更新
-            if self.acceleration_parallel_method == 'fixed':
-                transfer_index = (confidence_in_active_zones[:, itv_start: itv_end + 1] > self.acceleration_threshold)
-            elif self.acceleration_parallel_method == 'factor':
-                # TODO: 3.使用Fast-dLLM中的公式: (n + 1) * (1 - c_{n}) < f 来确定最大的可并行解码n
-                # 1. 对>min_threshold的位置按confidence排序; 3. 对这些满足条件的index形成transfer_inedx
-                cand_threshold = 0.0 * self.acceleration_threshold + 1.0 * self.acceleration_low_threshold
-                cand_mask = (confidence_in_active_zones > cand_threshold)  # (L,)
-                # print(f"LB-satisfied #tokens: {cand_mask.sum().item()}")
-                cand_idxs = torch.nonzero(cand_mask, as_tuple=False)[:, 1]  # (n,)
-                cand_confs = confidence_in_active_zones[cand_mask]  # (n,)
-                # 根据cand_confs排序cand_idxs
-                sorted_order = torch.argsort(cand_confs, descending=True)
-                cand_idxs = cand_idxs[sorted_order]
-                cand_confs = cand_confs[sorted_order]
-                # 2. 从cand_confs最低conf处开始挨个试验可行的n，直到满足条件;
-                for conf_idx, conf in reversed(list(enumerate(cand_confs.tolist()))):
-                    para_feasible_n = int(self.acceleration_factor / (1 - conf + 1e-6) - 1)
-                    #  3. 若满足公式，则根据这些满足条件的index形成transfer_inedx
-                    if para_feasible_n >= conf_idx + 1:
-                        transfer_index.scatter_(dim=1, index=cand_idxs[:conf_idx + 1].unsqueeze(0), value=True)
-                        break
-            elif self.acceleration_parallel_method == 'entropy':
-                pass
-            elif self.acceleration_parallel_method == 'margin':
-                pass
-            # 更新策略2[保底]: 若区间内元素不达解码阈值但仍高于最低阈值(可以直接是探索区间的阈值), 则进行top-k保守(conservative)更新
-            n_conf_updated = transfer_index.sum().item()
-            n_cons_updated = 0
-            if n_conf_updated < self.min_k:
-                confidence_for_topk = confidence_in_active_zones.clone()
-                # 排除已经为True的位置
-                if n_conf_updated > 0:
-                    confidence_for_topk[transfer_index] = -np.inf
-                _, topk_index = torch.topk(confidence_for_topk, dim=1, k=self.min_k - n_conf_updated)
-                # 最低置信度检测
-                cons_mask = confidence_for_topk.gather(dim=1, index=topk_index) > self.acceleration_low_threshold
-                cons_index = topk_index[cons_mask].unsqueeze(0)  # topk_index[topk_mask]会将结果自动降维
-                n_cons_updated = cons_mask.sum().item()
-                # 增加填充位置
-                transfer_index.scatter_(dim=1, index=cons_index, value=True)
-            print("Acceleration Phase: n_updated({}) = n_conf_updated({}) + n_cons_updated({})".format(
-                n_conf_updated + n_cons_updated, n_conf_updated, n_cons_updated))
+            total_n_para_updated = 0
+            total_n_cons_updated = 0
+            for state in interval_states:
+                if state['status'] != 'active':
+                    continue
 
-            # 高置信度更新无法进行，保守更新也无法进行。退出加速阶段
-            if n_conf_updated + n_cons_updated == 0:
+                itv_start, itv_end = state['coords']
+                mask_in_curr_zone = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+                mask_in_curr_zone[:, itv_start:itv_end] = True
+                confidence_in_curr_zone = torch.zeros_like(x0, dtype=confidence_in_active_zones.dtype, device=x0.device)
+                confidence_in_curr_zone[:, itv_start: itv_end + 1] = confidence_in_active_zones[:, itv_start: itv_end + 1]
+                # 更新策略1[加速]: 并行解码策略更新
+                if self.acceleration_parallel_method == 'fixed':
+                    para_transfer_index = (confidence_in_curr_zone > self.acceleration_threshold)
+                elif self.acceleration_parallel_method == 'factor':
+                    # TODO: 3.使用Fast-dLLM中的公式: (n + 1) * (1 - c_{n}) < f 来确定最大的可并行解码n
+                    # 1. 对>min_threshold的位置按confidence排序; 3. 对这些满足条件的index形成transfer_inedx
+                    cand_threshold = 0.0 * self.acceleration_threshold + 1.0 * self.acceleration_low_threshold
+                    cand_mask = (confidence_in_curr_zone > cand_threshold)  # (L,)
+                    # print(f"LB-satisfied #tokens: {cand_mask.sum().item()}")
+                    cand_idxs = torch.nonzero(cand_mask, as_tuple=False)[:, 1]  # (n,)
+                    cand_confs = confidence_in_curr_zone[cand_mask]  # (n,)
+                    # 根据cand_confs排序cand_idxs
+                    sorted_order = torch.argsort(cand_confs, descending=True)
+                    cand_idxs = cand_idxs[sorted_order]
+                    cand_confs = cand_confs[sorted_order]
+                    # 2. 从cand_confs最低conf处开始挨个试验可行的n，直到满足条件;
+                    for conf_idx, conf in reversed(list(enumerate(cand_confs.tolist()))):
+                        para_feasible_n = int(self.acceleration_factor / (1 - conf + 1e-6) - 1)
+                        #  3. 若满足公式，则根据这些满足条件的index形成transfer_inedx
+                        if para_feasible_n >= conf_idx + 1:
+                            transfer_index.scatter_(dim=1, index=cand_idxs[:conf_idx + 1].unsqueeze(0), value=True)
+                            break
+                elif self.acceleration_parallel_method == 'entropy':
+                    pass
+                elif self.acceleration_parallel_method == 'margin':
+                    pass
+                n_para_updated = para_transfer_index.sum().item()
+                # 更新策略2[保底]: 若区间内元素不达解码阈值但仍高于最低阈值(可以直接是探索区间的阈值), 则进行top-k保守(conservative)更新
+                n_cons_updated = 0
+                cons_transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+                cons_min_k = max(1, self.min_k // n_active_intervals)
+                if n_para_updated < cons_min_k:
+                    confidence_for_topk = confidence_in_curr_zone.clone()
+                    # 排除已经为True的位置
+                    if n_para_updated > 0:
+                        confidence_for_topk[para_transfer_index] = -np.inf
+                    _, topk_index = torch.topk(confidence_for_topk, dim=1, k=cons_min_k - n_para_updated)
+                    # 最低置信度检测
+                    cons_mask = confidence_for_topk.gather(dim=1, index=topk_index) > self.acceleration_low_threshold
+                    cons_index = topk_index[cons_mask].unsqueeze(0)  # topk_index[topk_mask]会将结果自动降维
+                    n_cons_updated = cons_mask.sum().item()
+                    # 增加填充位置
+                    cons_transfer_index.scatter_(dim=1, index=cons_index, value=True)
+                # 为transfer_index增加当前区间的更新信息
+                transfer_index |= para_transfer_index
+                transfer_index |= cons_transfer_index
+                total_n_para_updated += n_para_updated
+                total_n_cons_updated += n_cons_updated
+
+            print(f"curr_step {current_step} [Acceleration]: "
+                  f"total_n_updated({total_n_para_updated + total_n_cons_updated}) = total_n_para_updated({total_n_para_updated}) + total_n_cons_updated({total_n_cons_updated})")
+
+            # 单轮更新数低于设置阈值，提前退出加速阶段
+            if total_n_para_updated + total_n_cons_updated < self.min_k:
                 GG = True
             if not GG:
                 x[transfer_index] = x0[transfer_index]
-                # print(f"n_updated({n_conf_updated + n_cons_updated}) = n_conf_updated({n_conf_updated}) + n_cons_updated({n_cons_updated})")
+                # print(f"transfered positions: {torch.where(transfer_index)[-1]}")
                 # TODO: 3.根据区间边缘的密度，在一定程度上再动态推进区间（惯性）
                 # 更新每个活跃区间的状态
                 for state in interval_states:
@@ -699,11 +634,16 @@ class MRSampler:
             exploration_intervals.append({'inceptive_step': accumulated_steps, 'history_intervals': history_intervals})
             # print(f"exploration phase ends, use steps: {exploration_steps}, TPS: {(num_masked - num_masked_exploration) / (exploration_steps)}")
             # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Exploration")
-
             accumulated_steps += exploration_steps
+
             # ② 加速阶段
             x, acceleration_steps, outputs_acceleration, confidences_acceleration, transfer_idxs_acceleration \
-                = self.acceleration_phase(x, prompt_index, intervals)
+                = self.acceleration_phase(
+                    x,
+                    prompt_index,
+                    intervals,
+                    current_step=accumulated_steps,
+            )
 
             # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Acceleration")
             outputs.extend(outputs_acceleration)
