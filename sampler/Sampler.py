@@ -1,4 +1,4 @@
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Literal
 from torch import Tensor
 
 import torch
@@ -9,8 +9,9 @@ import torch.nn.functional as F
 
 from transformers import AutoTokenizer, AutoModel, PreTrainedModel, PreTrainedTokenizer
 from datasets import load_dataset
+from visualizer import get_local
 
-from sampler.utils import add_gumbel_noise, get_num_transfer_tokens
+from sampler.utils import add_gumbel_noise, get_num_transfer_tokens, set_seed
 from dataclasses import dataclass, fields, asdict, field
 
 
@@ -41,6 +42,7 @@ class MRSamplerConfig:
     exploration_M: int = 3
     exploration_threshold: float = 0.15
     # Acceleration phase config
+    acceleration_parallel_method: Literal["fixed", "factor", "entropy", "margin"] = "fixed"
     acceleration_threshold: float = 0.8
     acceleration_low_threshold: float = 0.6
     acceleration_factor: float = 1
@@ -52,6 +54,11 @@ class MRSamplerConfig:
     # Generation general config
     model_max_genlength: int = 2048
     model_max_steps: int = 2048
+    # Positional Weights
+    positional_weights_type: Literal['absolute', 'ratio', 'none'] = 'none'
+    max_weight: float = 1.0
+    initial_min_weight: float = 0.1
+
 
 @dataclass
 class GenerateOutput:
@@ -86,6 +93,8 @@ class MRSampler:
         self.tokenizer = tokenizer
         self.config = config
         self.device = model.device
+        self.absolute_positional_weights = None
+
         # binding configs to sampler
         for field in fields(config):
             print(f"{field.name}: {getattr(config, field.name)}")
@@ -101,6 +110,7 @@ class MRSampler:
     ):
         print(f"Loading model and tokenizer from path: {model_path}")
 
+        # get_local.activate()  # 在引入模型之前，激活装饰器
         model = AutoModel.from_pretrained(
             model_path,
             trust_remote_code=True,
@@ -117,13 +127,11 @@ class MRSampler:
 
         return cls(model=model, tokenizer=tokenizer, config=config)
 
-    def _precompute_positional_weights(
+    def precompute_absolute_positional_weights(
         self,
         max_steps: int,
         gen_length: int,
-        max_weight: float,
-        initial_min_weight: float,
-        device: torch.device,
+        device: torch.device = 'cuda',
         dtype: torch.dtype = torch.float32
     ) -> torch.Tensor:
         """
@@ -131,6 +139,8 @@ class MRSampler:
             每一行代表一个step的权重曲线，曲线随step增加而变得平缓。
         """
         assert gen_length > 0 and max_steps > 0, "gen_length and max_steps must > 0"
+        max_weight = self.max_weight
+        initial_min_weight = self.initial_min_weight
         if gen_length == 1:
             return torch.full((max_steps, gen_length), max_weight, device=device, dtype=dtype)
 
@@ -146,10 +156,37 @@ class MRSampler:
         min_weights = initial_min_weight + (max_weight - initial_min_weight) * t  # (max_steps, 1)
         # compute lambda_decay on each step, according to t
         lambda_decays = -torch.log(min_weights) / (gen_length - 1)  # (max_steps, 1)
-        # compute step_position_weights via broadcasting
-        step_position_weights = torch.exp(-lambda_decays * positions)  # (max_steps, gen_length)
+        # compute step_positional_weights via broadcasting
+        step_positional_weights = torch.exp(-lambda_decays * positions)  # (max_steps, gen_length)
 
-        return step_position_weights
+        return step_positional_weights
+
+    def compute_dynamic_positional_weights(
+        self,
+        gen_length: int,
+        unmasked_ratio: float,
+        ur_factor: float = 1.0,
+        device: torch.device = 'cuda',
+        dtype: torch.dtype = torch.float32
+    ) -> torch.Tensor:
+        """
+            compute a weight matrix shaped (gen_length,) for the current step based on unmasked_ratio
+        """
+        max_weight = self.max_weight
+        initial_min_weight = self.initial_min_weight
+
+        if gen_length == 1:
+            return torch.full((gen_length,), max_weight, device=device, dtype=dtype)
+
+        positions = torch.arange(gen_length, device=device, dtype=dtype).unsqueeze(0)  # (1, gen_length)
+
+        # compute min_weight based on unmasked_ratio
+        min_weight = min(1.0, initial_min_weight + ur_factor * unmasked_ratio)
+        lambda_decay = - torch.log(torch.tensor(min_weight)) / (gen_length - 1)
+        # compute ratio_positional_weights
+        ratio_positional_weights = torch.exp(-lambda_decay * positions)  # (max_steps, gen_length)
+
+        return ratio_positional_weights
 
 
     def _merge_intervals(self, intervals: List[tuple[int, int]]) -> List[tuple[int, int]]:
@@ -180,7 +217,7 @@ class MRSampler:
             self,
             x: torch.Tensor,
             prompt_index: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if self.cfg_scale > 0.:
             un_x = x.clone()
             un_x[prompt_index] = self.mask_id
@@ -197,7 +234,7 @@ class MRSampler:
         x0_p = torch.gather(p, dim=-1, index=x0.unsqueeze(-1)).squeeze(-1)
         mask_index = (x == self.mask_id)
         confidence = torch.where(mask_index, x0_p, -np.inf)
-        return x0, confidence
+        return x0, confidence, x0_p
 
 
     #  core methods  #
@@ -205,7 +242,7 @@ class MRSampler:
             self,
             x: Tensor,
             prompt_index: Tensor,
-            position_weights: Tensor = None,
+            exp_steps: int,
             EA_idx: int = 0,
             current_step: int = 0
     ):
@@ -218,6 +255,7 @@ class MRSampler:
         # print("--- 进入exploration阶段 ---")
         memory_intervals = []  # 之前轮探索得到的intervals [(start1, end1), (start2, end2),...]
         prompt_len = prompt_index.sum(dim=1).item()
+        gen_length = x.shape[-1] - prompt_len
         pre_demasked_index = (x != self.mask_id)
 
         steps_used = 0
@@ -227,13 +265,21 @@ class MRSampler:
         history_intervals = []
 
         no_advance_n = 0
-        for exp_step in range(self.max_exploration_steps):
+        for exp_step in range(exp_steps):
 
-            x0, confidence = self._model_forward(x, prompt_index)
-
+            x0, confidence, org_confidence = self._model_forward(x, prompt_index)
+            steps_used += 1
+            GG = False
             # inserting positional weights
-            if position_weights is not None:
-                confidence[:, prompt_len:] = confidence[:, prompt_len:] * position_weights[current_step]
+            if self.positional_weights_type == 'absolute':
+                confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.absolute_positional_weights[current_step]
+            elif self.positional_weights_type == 'ratio':
+                unmasked_ratio = (x != self.mask_id).sum().item() / gen_length
+                dynamic_positional_weights = self.compute_dynamic_positional_weights(gen_length, unmasked_ratio, device=x0.device)
+                confidence[:, prompt_len:] = confidence[:, prompt_len:] * dynamic_positional_weights
+            else:
+                pass
+
             # 2. 寻找、扩张、合并区间 (这里的逻辑来自我们上一轮的实现)
             # 2.1 寻找种子点
             conf_temp = confidence.clone()
@@ -245,147 +291,177 @@ class MRSampler:
             conf_temp[invalid_mask] = -np.inf
             select_N = min((~invalid_mask).sum().item(), self.exploration_N)    # mask且结果不是在前半段的EOT的位置数量
             if select_N == 0:
+                GG = True
+
+            if not GG:
+                _, seed_indices = torch.topk(conf_temp, k=select_N, dim=1)      # (b, l)
+
+                # soft-NMS式选seed点
+                seed_indices = [[] for _ in range(conf_temp.shape[0])]
+                for b in range(conf_temp.shape[0]):
+                    conf_b = conf_temp[b].clone()
+                    idxs = torch.arange(conf_b.shape[0], device=conf_b.device, dtype=torch.float32)
+                    # 使用基于高斯函数的soft-NMS来尽可能选到距离远的点
+                    for i in range(select_N):
+                        select_idx = torch.argmax(conf_b).item()
+                        # 无点可选提前退出（如N=2，且这两个点距离<exploration_M）
+                        if conf_b[select_idx] <= 0:
+                            select_N = i
+                            break
+                        # 选择经抑制处理后置信度次高的点
+                        seed_indices[b].append(select_idx)
+                        # 使用高斯函数抑制近距离权重，使得下次倾向于选择远离当前位置的点
+                        distances = torch.abs(idxs - select_idx)
+                        sigma = (conf_b.shape[0] - prompt_len) / self.exploration_N / 2
+                        gauss_weights = 1 - torch.exp(-torch.pow(distances, 2) / (sigma ** 2))
+                        conf_b = conf_b * gauss_weights
+                seed_indices = torch.Tensor(seed_indices).type(torch.long).to(x.device)
+
+                # 2.2 扩张 (方法1: 尽可能寻找多的区间)
+                intervals = []
+
+                exist_new_seed = False
+                found_indices_in_memory = set()
+                for b in range(seed_indices.shape[0]):
+                    # 对于每个seed点，若其已在之前的某个区间内，则直接从当前区间的两侧探索，否则从它本身开始探索
+                    for interval_idx in range(select_N):
+                        seed = seed_indices[b, interval_idx].item()
+                        seed_conf = conf_temp[b, seed].item()
+                        left = -1
+                        right = -1
+                        # 寻找当前seed点是否已在区间内，从而确定本轮的探索起点
+                        found_interval_in_memory = None
+                        for idx, (start, end) in enumerate(memory_intervals):
+                            if start <= seed <= end:
+                                found_interval_in_memory = (start, end)  # (区间编号, 起始, 结束)
+                                found_indices_in_memory.add(idx)
+                                break
+                        if found_interval_in_memory is None:
+                            assert x[0, seed] == self.mask_id
+                            left, right = seed, seed
+                            exist_new_seed = True
+                        else:
+                            left, right = found_interval_in_memory
+                        # 向左扩张...
+                        consecutive_failures = 0
+                        for i in range(left - 1, prompt_len - 1, -1):
+                            if pre_demasked_index[b, i]: #碰到demask已被demask的位置停止
+                                break
+                            # if conf_temp[b, i] > self.exploration_threshold:
+                            if conf_temp[b, i] > min(self.exploration_threshold, seed_conf / 2):
+                                left = i
+                                consecutive_failures = 0
+                            else:
+                                consecutive_failures += 1
+                                if consecutive_failures > self.exploration_M:
+                                    break
+                        # 向右扩张...
+                        consecutive_failures = 0
+                        for i in range(right + 1, x.shape[1]):
+                            if pre_demasked_index[b, i]: #碰到demask已被demask的位置停止
+                                break
+                            # if conf_temp[b, i] > self.exploration_threshold:
+                            if conf_temp[b, i] > min(self.exploration_threshold, seed_conf / 2):
+                                right = i
+                                consecutive_failures = 0
+                            else:
+                                consecutive_failures += 1
+                                if consecutive_failures > self.exploration_M:
+                                    break
+                        # 本轮收集到区间: memory中原对应区间的拓展 + 本轮探索新开区间
+                        intervals.append((left, right)) # 左右双闭 [left, right]
+
+                # 2.3 合并 (收集到区间 + memory中未在本轮中继续拓展的区间)
+                old_intervals = [interval for idx, interval in enumerate(memory_intervals) if idx not in found_indices_in_memory]
+                merged_intervals = self._merge_intervals(intervals + old_intervals)
+
+                # 3.top-k填充
+                transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+                transfer_index.scatter_(dim=1, index=seed_indices, value=True)
+                x[transfer_index] = x0[transfer_index]
+                # x.scatter_(dim=1, src=x0, index=seed_indices) 天坑！！！ scatter方法的意思是从src中顺序地选择赋入x的index位置处。index指定的是x中要被赋值的位置而不是在src中要被选择用于赋值的位置。
+
+                # print(f"types: x0-{x0.dtype}, confidence-{confidence.dtype}, transfer_index: {transfer_index.dtype}")
+                print(f"探索步骤 {exp_step + 1}: 找到区间 {merged_intervals}")
+
+                # 4. 历史区间更新
+                advance_threshold = 0.1
+                exist_intervals_advance = (
+                        exp_step == 0 or
+                        len(merged_intervals) != len(memory_intervals) or
+                        any((merged_intervals[i][1] - merged_intervals[i][0] + 1) / (memory_intervals[i][1] - memory_intervals[i][0] + 1) >= 1 + advance_threshold for i in range(len(merged_intervals)))
+                )
+
+                memory_intervals = merged_intervals
+
+                # 研究用：中间状态收集
+                outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
+                confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
+                transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
+                history_intervals.append([(start - prompt_len, end - prompt_len) for start, end in merged_intervals])
+
+                # 5. 探索阶段提前结束判断
+                if exist_new_seed or exist_intervals_advance:
+                    no_advance_n = 0
+                else:
+                    no_advance_n += 1
+                    # 后续可改为区间熵不变
+                    if no_advance_n >= 2:
+                        break
+            else:
+                transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+                outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
+                confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
+                transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
+                history_intervals.append([(start - prompt_len, end - prompt_len) for start, end in merged_intervals])
+
+            if GG:
                 break
 
-            _, seed_indices = torch.topk(conf_temp, k=select_N, dim=1)      # (b, l)
-
-            # soft-NMS式选seed点
-            seed_indices = [[] for _ in range(conf_temp.shape[0])]
-            for b in range(conf_temp.shape[0]):
-                conf_b = conf_temp[b].clone()
-                idxs = torch.arange(conf_b.shape[0], device=conf_b.device, dtype=torch.float32)
-                # 使用基于高斯函数的soft-NMS来尽可能选到距离远的点
-                for i in range(select_N):
-                    select_idx = torch.argmax(conf_b).item()
-                    # 无点可选提前退出（如N=2，且这两个点距离<exploration_M）
-                    if conf_b[select_idx] <= 0:
-                        select_N = i
-                        break
-                    # 选择经抑制处理后置信度次高的点
-                    seed_indices[b].append(select_idx)
-                    # 使用高斯函数抑制近距离权重，使得下次倾向于选择远离当前位置的点
-                    distances = torch.abs(idxs - select_idx)
-                    sigma = (conf_b.shape[0] - prompt_len) / self.exploration_N / 2
-                    gauss_weights = 1 - torch.exp(-torch.pow(distances, 2) / (sigma ** 2))
-                    conf_b = conf_b * gauss_weights
-            seed_indices = torch.Tensor(seed_indices).type(torch.long).to(x.device)
-
-            # 2.2 扩张 (方法1: 尽可能寻找多的区间)
-            intervals = []
-
-            exist_new_seed = False
-            found_indices_in_memory = set()
-            for b in range(seed_indices.shape[0]):
-                # 对于每个seed点，若其已在之前的某个区间内，则直接从当前区间的两侧探索，否则从它本身开始探索
-                for interval_idx in range(select_N):
-                    seed = seed_indices[b, interval_idx].item()
-                    left = -1
-                    right = -1
-                    # 寻找当前seed点是否已在区间内，从而确定本轮的探索起点
-                    found_interval_in_memory = None
-                    for idx, (start, end) in enumerate(memory_intervals):
-                        if start <= seed <= end:
-                            found_interval_in_memory = (start, end)  # (区间编号, 起始, 结束)
-                            found_indices_in_memory.add(idx)
-                            break
-                    if found_interval_in_memory is None:
-                        assert x[0, seed] == self.mask_id
-                        left, right = seed, seed
-                        exist_new_seed = True
-                    else:
-                        left, right = found_interval_in_memory
-                    # 向左扩张...
-                    consecutive_failures = 0
-                    for i in range(left - 1, prompt_len - 1, -1):
-                        if pre_demasked_index[b, i]: #碰到demask已被demask的位置停止
-                            break
-                        if conf_temp[b, i] > self.exploration_threshold:
-                            left = i
-                            consecutive_failures = 0
-                        else:
-                            consecutive_failures += 1
-                            if consecutive_failures > self.exploration_M:
-                                break
-                    # 向右扩张...
-                    consecutive_failures = 0
-                    for i in range(right + 1, x.shape[1]):
-                        if pre_demasked_index[b, i]: #碰到demask已被demask的位置停止
-                            break
-                        if conf_temp[b, i] > self.exploration_threshold:
-                            right = i
-                            consecutive_failures = 0
-                        else:
-                            consecutive_failures += 1
-                            if consecutive_failures > self.exploration_M:
-                                break
-                    # 本轮收集到区间: memory中原对应区间的拓展 + 本轮探索新开区间
-                    intervals.append((left, right)) # 左右双闭 [left, right]
-
-            # 2.3 合并 (收集到区间 + memory中未在本轮中继续拓展的区间)
-            old_intervals = [interval for idx, interval in enumerate(memory_intervals) if idx not in found_indices_in_memory]
-            merged_intervals = self._merge_intervals(intervals + old_intervals)
-
-            # 3.top-k填充
-            transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-            transfer_index.scatter_(dim=1, index=seed_indices, value=True)
-            x[transfer_index] = x0[transfer_index]
-            # x.scatter_(dim=1, src=x0, index=seed_indices) 天坑！！！ scatter方法的意思是从src中顺序地选择赋入x的index位置处。index指定的是x中要被赋值的位置而不是在src中要被选择用于赋值的位置。
-
-            # 研究用：中间状态收集
-            steps_used += 1
-            # print(f"types: x0-{x0.dtype}, confidence-{confidence.dtype}, transfer_index: {transfer_index.dtype}")
-            outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
-            confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
-            transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
-            history_intervals.append([(start - prompt_len, end - prompt_len) for start, end in merged_intervals])
-            print(f"探索步骤 {exp_step + 1}: 找到区间 {merged_intervals}")
-
-            # 4. 历史区间更新
-            advance_threshold = 0.1
-            exist_intervals_advance = (
-                    exp_step == 0 or
-                    len(merged_intervals) != len(memory_intervals) or
-                    any((merged_intervals[i][1] - merged_intervals[i][0] + 1) / (memory_intervals[i][1] - memory_intervals[i][0] + 1) >= 1 + advance_threshold for i in range(len(merged_intervals)))
-            )
-
-            memory_intervals = merged_intervals
-
-            # 5. 探索阶段提前结束判断
-            if exist_new_seed or exist_intervals_advance:
-                no_advance_n = 0
-            else:
-                no_advance_n += 1
-                # 后续可改为区间熵不变
-                if no_advance_n >= 2:
-                    break
-
-        # 基于密度的再次扩散
+        # post processing
+        # 1. density-based expansion
         # print(f"探索阶段找到原始区间: {memory_intervals}")
-        desities = [conf_temp[:, start:end+1].nan_to_num(neginf=0).mean().item() for start, end in memory_intervals]
-        expected_deltas = [int(desities[i] * (end - start + 1) * 2 // 3) for i, (start, end) in enumerate(memory_intervals)]
+        desities = [org_confidence[:, start: end+1].nan_to_num(neginf=0).mean().item() for start, end in memory_intervals]
+        expected_deltas = [int(desities[i] * (end - start + 1)) for i, (start, end) in enumerate(memory_intervals)]
         density_expansion_intervals = []  # [(new_left, new_right), ...]
         for i, (start, end) in enumerate(memory_intervals):
+            # 两边总扩最大delta个格子，尽可能均衡拓展
             delta = expected_deltas[i]
             # 左侧搜索范围
-            left_search_min = max(prompt_len, start - delta)
+            left_search_min = max(prompt_len, start - math.ceil(delta / 2))
             left = start
             for pos in range(start - 1, left_search_min - 1, -1):
                 if x[0, pos] != self.mask_id:
                     break
                 left = pos
             # 右侧搜索范围
-            right_search_max = min(x.shape[1] - 1, end + delta)
+            rest_delta = delta - (start - left)
+            right_search_max = min(x.shape[1] - 1, end + rest_delta)
             right = end
             for pos in range(end + 1, right_search_max + 1):
                 if x[0, pos] != self.mask_id:
                     break
                 right = pos
+            # 补左搜索(左扩已==delta/2，右扩<delta/2<=rest_delta，剩余格再分配到左)
+            rest_delta = rest_delta - (right - end)
+            left_search_min = max(prompt_len, left - rest_delta)
+            for pos in range(left - 1, left_search_min - 1, -1):
+                if x[0, pos] != self.mask_id:
+                    break
+                left = pos
             density_expansion_intervals.append((left, right))
         memory_intervals = self._merge_intervals(density_expansion_intervals)
 
-        history_intervals.append([(start - prompt_len, end - prompt_len) for start, end in density_expansion_intervals])
+        # 2. interval purification: rule out intervals such that have been fully demasked during exploration steps
+        purified_intervals = []
+        for start, end in memory_intervals:
+            if (x[0, start:end + 1] == self.mask_id).any():
+                purified_intervals.append((start, end))
+        memory_intervals = purified_intervals
 
-        print(f"边界扩张后找到最终区间: {memory_intervals}")
+        print(f"边界扩张+区间净化后形成区间: {memory_intervals}")
+        history_intervals.append([(start - prompt_len, end - prompt_len) for start, end in memory_intervals])    # for visualization
+
         return x, memory_intervals, steps_used, outputs, confidences, transfer_idxs, history_intervals
 
     def acceleration_phase(
@@ -393,7 +469,6 @@ class MRSampler:
             x: Tensor,
             prompt_index: Tensor,
             intervals: List[tuple[int, int]],
-            acceleration_method='factor'
     ):
         """
         自适应加速阶段: 对探索阶段中形成的可行区间进行高速解码，直至不符合某种下限条件
@@ -424,22 +499,26 @@ class MRSampler:
                     start, end = state['coords']
                     dynamic_accel_mask[:, start: end + 1] = True
                     active_intervals_found = True
-            # 如果所有活跃区间都已填满但状态未更新，则退出
-            # if not active_intervals_found or not (dynamic_accel_mask & (x == mask_id)).any():
-            #     break
             if not active_intervals_found:
                 break
 
             # 执行一次forward并行更新
-            x0, confidence = self._model_forward(x, prompt_index)
-
+            x0, confidence, org_confidence = self._model_forward(x, prompt_index)
+            steps_used += 1
+            GG = False
             confidence_in_active_zones = torch.where(dynamic_accel_mask, confidence, -np.inf)
-            # 更新策略1: 并行解码策略更新
-            # TODO: 2.考虑在不同区间内结合各自的密度进行更新，可以基于区间密度平均(背诵vs灵感)，也可以将密度作为置信值的一部分(熟就是熟)，或二者都(数学式)
             transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-            if acceleration_method == 'threshold':
-                transfer_index = (confidence_in_active_zones > self.acceleration_threshold)
-            elif acceleration_method == 'factor':
+
+            # TODO: 考虑在不同区间内结合各自的密度进行更新，可以基于区间密度平均(背诵vs灵感)，也可以将密度作为置信值的一部分(熟就是熟)，或二者都(数学式)
+            # for state in interval_states:
+            #     if state['status'] != 'active':
+            #         continue
+            #         
+            #     itv_start, itv_end = state['coords']
+            # 更新策略1[加速]: 并行解码策略更新
+            if self.acceleration_parallel_method == 'fixed':
+                transfer_index = (confidence_in_active_zones[:, itv_start: itv_end + 1] > self.acceleration_threshold)
+            elif self.acceleration_parallel_method == 'factor':
                 # TODO: 3.使用Fast-dLLM中的公式: (n + 1) * (1 - c_{n}) < f 来确定最大的可并行解码n
                 # 1. 对>min_threshold的位置按confidence排序; 3. 对这些满足条件的index形成transfer_inedx
                 cand_threshold = 0.0 * self.acceleration_threshold + 1.0 * self.acceleration_low_threshold
@@ -458,7 +537,11 @@ class MRSampler:
                     if para_feasible_n >= conf_idx + 1:
                         transfer_index.scatter_(dim=1, index=cand_idxs[:conf_idx + 1].unsqueeze(0), value=True)
                         break
-            # 更新策略2: 若区间内元素不达解码阈值但仍高于最低阈值(可以直接是探索区间的阈值), 则进行top-k保守(conservative)更新
+            elif self.acceleration_parallel_method == 'entropy':
+                pass
+            elif self.acceleration_parallel_method == 'margin':
+                pass
+            # 更新策略2[保底]: 若区间内元素不达解码阈值但仍高于最低阈值(可以直接是探索区间的阈值), 则进行top-k保守(conservative)更新
             n_conf_updated = transfer_index.sum().item()
             n_cons_updated = 0
             if n_conf_updated < self.min_k:
@@ -466,33 +549,39 @@ class MRSampler:
                 # 排除已经为True的位置
                 if n_conf_updated > 0:
                     confidence_for_topk[transfer_index] = -np.inf
-                _, topk_index = torch.topk(confidence_for_topk, dim=1, k = self.min_k - n_conf_updated)
+                _, topk_index = torch.topk(confidence_for_topk, dim=1, k=self.min_k - n_conf_updated)
                 # 最低置信度检测
                 cons_mask = confidence_for_topk.gather(dim=1, index=topk_index) > self.acceleration_low_threshold
                 cons_index = topk_index[cons_mask].unsqueeze(0)  # topk_index[topk_mask]会将结果自动降维
                 n_cons_updated = cons_mask.sum().item()
                 # 增加填充位置
                 transfer_index.scatter_(dim=1, index=cons_index, value=True)
+            print("Acceleration Phase: n_updated({}) = n_conf_updated({}) + n_cons_updated({})".format(
+                n_conf_updated + n_cons_updated, n_conf_updated, n_cons_updated))
+
             # 高置信度更新无法进行，保守更新也无法进行。退出加速阶段
             if n_conf_updated + n_cons_updated == 0:
-                break
-            x[transfer_index] = x0[transfer_index]
-            # print(f"n_updated({n_conf_updated + n_cons_updated}) = n_conf_updated({n_conf_updated}) + n_cons_updated({n_cons_updated})")
-            # TODO: 3.根据区间边缘的密度，在一定程度上再动态推进区间（惯性）
-            # 更新每个活跃区间的状态
-            for state in interval_states:
-                if state['status'] == 'active':
-                    start, end = state['coords']
-                    # 检查这个区域是否还有[MASK]
-                    if not (x[:, start: end + 1] == self.mask_id).any():
-                        state['status'] = 'completed'
-                        # print(f"区间 {state['coords']} 加速完成!")
+                GG = True
+            if not GG:
+                x[transfer_index] = x0[transfer_index]
+                # print(f"n_updated({n_conf_updated + n_cons_updated}) = n_conf_updated({n_conf_updated}) + n_cons_updated({n_cons_updated})")
+                # TODO: 3.根据区间边缘的密度，在一定程度上再动态推进区间（惯性）
+                # 更新每个活跃区间的状态
+                for state in interval_states:
+                    if state['status'] == 'active':
+                        start, end = state['coords']
+                        # 检查这个区域是否还有[MASK]
+                        if not (x[:, start: end + 1] == self.mask_id).any():
+                            state['status'] = 'completed'
+                            # print(f"区间 {state['coords']} 加速完成!")
 
             # dev: 更新历史记录
-            steps_used += 1  # 统计步数
             outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
             confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
             transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
+
+            if GG:
+                break
 
         return x, steps_used, outputs, confidences, transfer_idxs
 
@@ -524,7 +613,7 @@ class MRSampler:
         num_transfer_tokens = get_num_transfer_tokens(mask_index, todo_steps)  # (b, todo_steps)
 
         for step_i in range(todo_steps):
-            x0, confidence = self._model_forward(x, prompt_index)
+            x0, confidence, org_confidence = self._model_forward(x, prompt_index)
             steps_used += 1
 
             _, topk_idxs = torch.topk(confidence, k=num_transfer_tokens[0, step_i], dim=1)  # (b, l)
@@ -547,7 +636,6 @@ class MRSampler:
         prompt,
         gen_length=256,
         max_steps=256,
-        enable_position_weights=True,
         enable_metrics=True,
     ) -> GenerateOutput:
         """
@@ -563,12 +651,16 @@ class MRSampler:
         prompt_index = (x != self.mask_id)
 
         # initalize positional weights
-        position_weights = None
-        if enable_position_weights:
-            position_weights = self._precompute_positional_weights(
+        positional_weights = None
+        if self.positional_weights_type == 'absolute':
+            self.absolute_positional_weights = self.precompute_absolute_positional_weights(
                 max_steps=max_steps, gen_length=gen_length, max_weight=1, initial_min_weight=0.25,
                 device=self.model.device, dtype=torch.float32
             )
+        elif self.positional_weights_type == 'ratio':
+            pass
+        else:
+            pass
 
         # 主循环 (探索与加速)
         outputs = []
@@ -590,7 +682,13 @@ class MRSampler:
 
             # ① 探索阶段
             x, intervals, exploration_steps, exploration_outputs, exploration_confidences, exploration_transfer_idxs, history_intervals \
-                = self.exploration_phase(x, prompt_index, position_weights=position_weights, EA_idx=EA_idx, current_step=accumulated_steps)
+                = self.exploration_phase(
+                x,
+                prompt_index,
+                exp_steps=min(self.max_exploration_steps, max_steps - accumulated_steps),
+                EA_idx=EA_idx,
+                current_step=accumulated_steps
+            )
 
             # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Exploration")
             outputs.extend(exploration_outputs)
@@ -605,7 +703,7 @@ class MRSampler:
             accumulated_steps += exploration_steps
             # ② 加速阶段
             x, acceleration_steps, outputs_acceleration, confidences_acceleration, transfer_idxs_acceleration \
-                = self.acceleration_phase(x, prompt_index, intervals, 'factor')
+                = self.acceleration_phase(x, prompt_index, intervals)
 
             # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Acceleration")
             outputs.extend(outputs_acceleration)
@@ -633,7 +731,8 @@ class MRSampler:
             # print(f"No Need for mop_up phase")
         # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Mopup")
 
-        total_steps = accumulated_steps + mopup_steps
+        accumulated_steps += mopup_steps
+        total_steps = accumulated_steps
 
         # compute metrics
         end_time = time.perf_counter()
@@ -659,13 +758,18 @@ class MRSampler:
         )
 
 def main():
+    set_seed(1234)
     device = 'cuda:0'
     model_path = "../models/LLaDA-8B-Instruct"
-    # model = AutoModel.from_pretrained(model_path, trust_remote_code=True, torch_dtype=torch.bfloat16).to(device).eval()
-    # tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
-    gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    prompts = gsm8k_dataset['test']['question'][0:3]
+    # 4-shot prompt
+    few_shot_filename = "../prompts/gsm8k_shot.txt"
+    with open(few_shot_filename, "r", encoding="utf-8") as f:
+        prompts= f.readlines()[0:3]
+
+    # base prompt
+    # gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
+    # prompts = gsm8k_dataset['test']['question'][2:3]
 
     # --- 使用类进行生成 ---
     config = MRSamplerConfig(
@@ -674,13 +778,17 @@ def main():
         max_exploration_steps=10,
         exploration_N=2,
         exploration_M=3,
-        exploration_threshold=0.15,
-        acceleration_threshold=0.8,
+        exploration_threshold=0.25,
+        acceleration_parallel_method='fixed',
+        acceleration_threshold=0.9,
         acceleration_low_threshold=0.6,
-        acceleration_factor=0.6,
+        acceleration_factor=1,
         max_mopup_steps=10,
         mopup_gate_ratio=0.9,
-        mopup_speed=2
+        mopup_speed=2,
+        positional_weights_type='none',
+        max_weight=1.0,
+        initial_min_weight=0.1,
     )
 
     max_gen_steps = 256
@@ -699,12 +807,16 @@ def main():
         prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
         input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
 
-        OUT = sampler.generate(input_ids, gen_length=max_gen_steps, max_steps=max_gen_steps)
-
-        out = OUT.out
-
-        ans = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
-        print(f"Prompt_{i}'s answer: {ans}\n")
+        # exploration_thresholds = [0.15, 0.25, 0.4] # -> 0.25 is good for 'fixed', 'factor'
+        # exploration_factors = [0.6, 0.7, 0.8, 0.9, 1.0]
+        exploration_thresholds = [0.25]
+        for exp_tr in exploration_thresholds:
+            sampler.exploration_threshold = exp_tr
+            print('=' * 20 + f" exploration_threshold: {exp_tr} " + "=" * 20)
+            OUT = sampler.generate(input_ids, gen_length=max_gen_steps, max_steps=max_gen_steps)
+            out = OUT.out
+            ans = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+            print(f"Prompt_{i}'s answer: {ans}\n")
 
 
 if __name__ == '__main__':

@@ -57,11 +57,11 @@ class LLaDAEvalHarness(LM):
 
         super().__init__()
 
-        print(f"!!! DEBUG: Running evaluation with args: \n{kwargs}")
-        print(f"mc_num: {mc_num}"
-              f"batch_size: {batch_size}"
-              f"steps: {steps}"
-              f"gen_length: {gen_length}")
+        print(f"!!! [DEBUG]: Running evaluation with args: \n{kwargs}")
+        print(f"mc_num: {mc_num}\n"
+              f"batch_size: {batch_size}\n"
+              f"steps: {steps}\n"
+              f"gen_length: {gen_length}\n")
 
         # 设置多gpu框架
         accelerator = accelerate.Accelerator()
@@ -71,7 +71,6 @@ class LLaDAEvalHarness(LM):
             self.accelerator = None
         if self.accelerator is not None:
             print(f"device_map: {self.accelerator.device}")
-
 
         sampler_config_fields = {f.name for f in fields(MRSamplerConfig)}
         sampler_kwargs = {
@@ -113,6 +112,12 @@ class LLaDAEvalHarness(LM):
         # self.total_n_gen_tokens = 0
         self.overall_metrics: List[GenerationMetrics] = []
         self.output_dir = kwargs['output_dir']
+
+        # 将不在主线程的标准输出和标准错误重定向到空设备
+        if not self.accelerator.is_main_process:
+            f = open(os.devnull, 'w')
+            sys.stdout = f
+            sys.stderr = f
 
     @property
     def rank(self):
@@ -211,14 +216,19 @@ class LLaDAEvalHarness(LM):
             continuation = context[-n_spaces:] + continuation
             context = context[:-n_spaces]
 
-        whole_enc = self.tokenizer(context + continuation)["input_ids"]
-        context_enc = self.tokenizer(context)["input_ids"]
+        whole_enc = self.sampler.tokenizer(context + continuation)["input_ids"]
+        context_enc = self.sampler.tokenizer(context)["input_ids"]
 
         context_enc_len = len(context_enc)
         continuation_enc = whole_enc[context_enc_len:]
 
         return context_enc, continuation_enc
 
+    # PPL
+    def loglikelihood_rolling(self, requests):
+        raise NotImplementedError
+
+    # multiple choices
     def loglikelihood(self, requests):
         def _tokenize(e):
             prefix, target = self._encode_pair(e["prefix"], e["target"])
@@ -229,7 +239,6 @@ class LLaDAEvalHarness(LM):
                 "target": target,
             }
 
-        ds = []
         ds = [{"prefix": req.args[0], "target": req.args[1]} for req in requests]
         ds = Dataset.from_list(ds)
         ds = ds.map(_tokenize)
@@ -238,9 +247,10 @@ class LLaDAEvalHarness(LM):
 
         assert max(prompt_len) <= 4096
 
+        on_main_process = self.accelerator is None or self.accelerator.is_main_process
         out = []
         with torch.no_grad():
-            for i, elem in enumerate(tqdm(ds, desc="Computing likelihood...")):
+            for i, elem in enumerate(tqdm(ds, desc="Computing likelihood..."), disable=on_main_process):
                 prefix = elem["prefix"]
                 target = elem["target"]
 
@@ -252,21 +262,18 @@ class LLaDAEvalHarness(LM):
         torch.cuda.empty_cache()
         return out
 
-    def loglikelihood_rolling(self, requests):
-        raise NotImplementedError
-
+    # fixed answer
     def generate_until(self, requests: list[Instance]):
         tokenizer = self.sampler.tokenizer
 
-        # 将不在主线程的标准输出和标准错误重定向到空设备
-        if not self.accelerator.is_main_process:
-            f = open(os.devnull, 'w')
-            sys.stdout = f
-            sys.stderr = f
 
         def _tokenize(e):
+            m = [{"role": "user", "content": e["question"]}]
+            prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
+            input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids
+            # print(f"{'='*20} input_ids.shape: {input_ids.shape} {'='*20}")
             return {
-                "question": tokenizer(e["question"])["input_ids"],
+                "input_ids": input_ids,
                 "question_text": e["question"],
                 "until": e["until"],
             }
@@ -279,7 +286,8 @@ class LLaDAEvalHarness(LM):
         on_main_process = self.accelerator is None or self.accelerator.is_main_process
         out = []
         for elem in tqdm(ds, desc="Generating...", disable=not on_main_process):
-            prompt = elem["question"].unsqueeze(0).to(self.device)
+            prompt = elem["input_ids"].to(self.device)
+            # print(f"\n{'=' * 20} prompt.shape: {prompt.shape} {'=' * 20}")
             stop_tokens = elem["until"]
             stop_tokens.append(tokenizer.eos_token)
 

@@ -1,3 +1,6 @@
+import random
+
+import numpy as np
 import torch
 
 def add_gumbel_noise(logits, temperature):
@@ -36,8 +39,19 @@ def get_num_transfer_tokens(mask_index, steps):
     return num_transfer_tokens
 
 
+def decode_outputs(output_ids, tokenizer):
+    """
+        解码token_ids -> tokens
+        output_ids: list of steps*gen_length
+    """
+    decoded_outputs = [
+        [tokenizer.decode(token_id) for token_id in output_each_step]
+        for output_each_step in output_ids
+    ]
+    return decoded_outputs
+
+
 def _precompute_positional_weights(
-    self,
     max_steps: int,
     gen_length: int,
     max_weight: float,
@@ -70,15 +84,37 @@ def _precompute_positional_weights(
 
     return step_position_weights
 
-
-def decode_outputs(output_ids, tokenizer):
+def compute_dynamic_positional_weights(
+    gen_length: int,
+    unmasked_ratio: float,
+    max_weight: float = 1.0,
+    initial_min_weight: float = 0.1,
+    ur_factor: float = 1.0,
+    device: torch.device = 'cuda',
+    dtype: torch.dtype = torch.float32
+) -> torch.Tensor:
     """
-        解码token_ids -> tokens
-        output_ids: list of steps*gen_length
+        compute a weight matrix shaped (gen_length,) for the current step based on unmasked_ratio
     """
-    decoded_outputs = [
-        [tokenizer.decode(token_id) for token_id in output_each_step]
-        for output_each_step in output_ids
-    ]
-    return decoded_outputs
 
+    if gen_length == 1:
+        return torch.full((gen_length,), max_weight, device=device, dtype=dtype)
+
+    positions = torch.arange(gen_length, device=device, dtype=dtype).unsqueeze(0)  # (1, gen_length)
+
+    # compute min_weight based on unmasked_ratio
+    min_weight = min(1.0, initial_min_weight + ur_factor * unmasked_ratio)
+    lambda_decay = - torch.log(torch.tensor(min_weight)) / (gen_length - 1)
+    # compute ratio_positional_weights
+    ratio_positional_weights = torch.exp(-lambda_decay * positions)  # (max_steps, gen_length)
+
+    return ratio_positional_weights
+
+
+def set_seed(seed):
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False

@@ -274,7 +274,7 @@ def plot_decoding_history_on_ax(ax, tokens, transfers, confidences=None, img_cac
     num_steps, gen_len = np.array(tokens).shape
 
     # 动态调整字体大小，防止在格子很小时文字溢出
-    fontsize = max(4, 16 - gen_len // 6)
+    fontsize = max(2, 16 - gen_len // 6)
 
     # imshow会自动调整格子大小以适应ax的固定宽度; aspect='equal' 确保每个格子是正方形。
     if img_cache is not None:
@@ -290,15 +290,15 @@ def plot_decoding_history_on_ax(ax, tokens, transfers, confidences=None, img_cac
             ax.text(j, i, tokens[i][j], ha="center", va="center", color=text_color, fontsize=fontsize)
 
             if transfers[i][j]:
-                rect = patches.Rectangle((j - 0.5, i - 0.5), 1, 1, linewidth=3, edgecolor='red', facecolor='none')
+                rect = patches.Rectangle((j - 0.5, i - 0.5), 1, 1, linewidth=2, edgecolor='red', facecolor='none')
                 ax.add_patch(rect)
 
-    # 新增功能：用一个醒目的边框框出当前step的行
+    # 高亮框出当前step对应行
     highlight_rect = patches.Rectangle(
         (-0.5, step_idx - 0.5), # 矩形左下角坐标
         gen_len,                          # 矩形宽度
-        1,                                # 矩形高度
-        linewidth=4,
+        height=1,                          # 矩形高度
+        linewidth=2,
         edgecolor='lime',                 # 使用鲜绿色，易于区分
         facecolor='none'
     )
@@ -308,9 +308,10 @@ def plot_decoding_history_on_ax(ax, tokens, transfers, confidences=None, img_cac
     xlabels = xticks + prompt_len
     ax.set_xticks(xticks)
     ax.set_xticklabels(xlabels, fontsize=fontsize)
-    ax.set_yticks(np.arange(num_steps))
-    ax.set_yticklabels(np.arange(1, num_steps + 1), fontsize=fontsize)
-    ax.set_title(f"Full Decoding History (Current Step {step_idx})", fontsize=16)
+    display_yticks = np.array([1, step_idx, num_steps])
+    ax.set_yticks(display_yticks - 1)
+    ax.set_yticklabels([str(tick) for tick in display_yticks], fontsize=fontsize)
+    ax.set_title(f"Full Decoding History (Current Step {step_idx + 1})", fontsize=16)
     ax.tick_params(axis='x', labeltop=True, labelbottom=False) # 将X轴刻度置于顶部
 
 # 辅助函数3: 绘制单个Attention Map
@@ -329,206 +330,31 @@ def plot_single_attention_map_on_ax(ax, attention_map_data, title, prompt_len, t
     demasked_positions = np.where(transfers)[0] + prompt_len
 
     # 在 prompt_len 位置绘制红色虚线以分割区域
+    # print(f"plot_single_attention_map_on_ax: prompt_len {prompt_len}")
     ax.axvline(x=prompt_len - 0.5, color='red', linestyle='--', linewidth=3)
     ax.axhline(y=prompt_len - 0.5, color='red', linestyle='--', linewidth=3)
     for pos in demasked_positions:
-        ax.axhline(y=pos - 0.5, color='#CCC', linestyle='-', linewidth=2)
-        ax.axhline(y=pos + 0.5, color='#CCC', linestyle='-', linewidth=2)
+        ax.axhline(y=pos - 0.5, color='#CCC', linestyle='-', linewidth=1)
+        ax.axhline(y=pos + 0.5, color='#CCC', linestyle='-', linewidth=1)
 
     if show_axis:
         # 检查 prompt_len 是否在有效范围内
         assert 0 <= prompt_len <= seq_len
         # 设置刻度，只显示0，最大序列长，和prompt_len
-        base_ticks = np.array([0, seq_len, prompt_len]) - 0.5  #-0.5是为了让刻度显示在
+        base_ticks = np.array([0, seq_len, prompt_len]) - 0.5  #-0.5是为了让刻度显示在正中间
         demasked_ticks = demasked_positions - 0.5
         xticks = np.concatenate((base_ticks, demasked_ticks))
         # 格子的起始位置
         base_labels = ['0', str(seq_len), str(prompt_len)]
         demasked_labels = demasked_positions.astype(str)
-        demasked_set = set(demasked_labels)
         tick_labels = np.concatenate((base_labels, demasked_labels))
         ax.set_xticks(xticks)
         ax.set_yticks(xticks)
         ax.set_xticklabels(tick_labels)
         ax.set_yticklabels(tick_labels)
-        # 将对应 prompt_len 的刻度标签颜色设置为红色
-        # get_xticklabels() 需要在设置xticks后调用才能获取最新的列表
-        # xticklabels = ax.get_xticklabels()
-        # yticklabels = ax.get_yticklabels()
-        # for label in yticklabels:
-        #     text = label.get_text()
-        #     if text in demasked_set:
-        #         label.set_color('green')
-        #     elif text == str(prompt_len):
-        #         label.set_color('red')
     else:
         ax.set_xticks([])
         ax.set_yticks([])
 
-# 绘制控制函数:
-# def run_gen_until(steps, gen_length, block_length, prompts, output_dir,
-#       vis_overall=True, vis_attn_map=True, console_show=False, file_save=True):
-#     """
-#         根据prompts生成回答并可视化
-#     """
-#     output_dir = os.path.abspath(output_dir)  # 转绝对路径
-#     os.makedirs(output_dir, exist_ok=True)
-#     overall_output_dir = os.path.join(output_dir, "overall")
-#     if os.path.exists(overall_output_dir):
-#         shutil.rmtree(overall_output_dir)
-#
-#     key = 'LLaDABlock._manually_scaled_dot_product_attention'
-#     print(f"inferencing and visualizing to path: {os.path.abspath(output_dir)}")
-#
-#     for i, prompt in enumerate(prompts, 1):
-#
-#         get_local.cache[key] = []
-#         print(f"generating answer {i} with step-{steps}, gen_length={gen_length} to {output_dir}")
-#         m = [{"role": "user", "content": prompt}, ]
-#         prompt = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
-#         input_ids = tokenizer(prompt)['input_ids']
-#         input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
-#
-#         out, outputs_decoded, confidences, transfer_idxs = generate(model, input_ids, tokenizer, steps=steps, gen_length=gen_length, block_length=block_length, temperature=0., cfg_scale=0., remasking='low_confidence')
-#
-#         # steps输出结果整体 可视化
-#         answer = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
-#         if vis_overall:
-#             if file_save:
-#                 os.makedirs(overall_output_dir, exist_ok=True)
-#             visualize_overall_steps(overall_output_dir, (outputs_decoded, confidences, transfer_idxs),
-#                 i, prompt, answer, is_show=console_show, is_save=file_save)
-#             print(f"overall saved to {overall_output_dir}")
-#
-#         # 逐Step Attention Maps 可视化
-#         n_prompt_tokens = len(input_ids)
-#         cache = get_local.cache
-#         if vis_attn_map:
-#             value_list = cache[key]
-#             assert len(value_list) % steps == 0
-#             n_layers = len(value_list) // steps
-#             shape_per_layer = value_list[0].shape # (batch_size, heads, seq_len, seq_len)
-#
-#             # 重新塑形，将steps维度提取出来
-#             steps_attention_maps = np.array(value_list).reshape(
-#                 (steps, n_layers) + shape_per_layer
-#             ).astype(np.float16) # (steps, N_layers, batch_size, heads, seq_len, seq_len)
-#
-#             # --- 动态计算布局参数 ---
-#             # 固定绘图的宽度
-#             # FIG_WIDTH = max(32, gen_length * 0.7)
-#             FIG_WIDTH = 64
-#             P1_HEIGHT = steps * (FIG_WIDTH / gen_length) # decoding_history区域高度
-#             P2_HEIGHT = FIG_WIDTH # attention_maps区域高度
-#             P3_HEIGHT = 1 # prompt&answer区域高度
-#             FIG_HEIGHT = P1_HEIGHT + P2_HEIGHT
-#
-#             # 为当前prompt的每个step生成一张包含预测和所有层注意力的大图
-#             prompt_output_dir = os.path.join(output_dir, f"prompt_{i}_details")
-#             # if os.path.exists(prompt_output_dir):
-#             #     shutil.rmtree(prompt_output_dir)
-#             os.makedirs(prompt_output_dir, exist_ok=True)
-#             existed_imgs_step = len(os.listdir(prompt_output_dir))
-#             if existed_imgs_step == steps:
-#                 print(f"prompt_{i} already done, go to next step")
-#                 continue
-#             elif existed_imgs_step > 0:
-#                 print(f"prompt_{i} partially done, continue generating from step{existed_imgs_step + 1}")
-#             # 优化手段，预绘制并缓存总的cmap热力图。事实证明没啥用
-#             # norm = Normalize(vmin=0, vmax=1)
-#             # cmap = plt.colormaps.get_cmap('Blues')
-#             # decoding_history_image = cmap(norm(confidences))
-#
-#             for step_idx in range(existed_imgs_step, steps):
-#                 # 创建一个足够大的画布
-#                 fig = plt.figure(figsize=(FIG_WIDTH, FIG_HEIGHT))
-#
-#                 # 使用GridSpec创建 2x1 的布局，分别对应P1(decoding_history)和P2(attention_maps)
-#                 gs_main = gridspec.GridSpec(3, 1, figure=fig, height_ratios=[P1_HEIGHT, P2_HEIGHT, P3_HEIGHT], hspace=0.2)
-#
-#                 # --- 1. 绘制上方的decoding_history大图 ---
-#                 ax_history = fig.add_subplot(gs_main[0, :]) # 占据第一行的所有列
-#                 plot_decoding_history_on_ax(
-#                     ax=ax_history,
-#                     tokens=outputs_decoded,
-#                     confidences=confidences,
-#                     transfers=transfer_idxs,
-#                     step_idx=step_idx,
-#                     prompt_len=n_prompt_tokens
-#                 )
-#
-#                 # --- 2. 绘制下方的attention_maps ---
-#                 gs_p2 = gridspec.GridSpecFromSubplotSpec(6, 8, subplot_spec=gs_main[1, 0], hspace=0.2)
-#                 # 左侧画一张大的总平均attention_map。在N_layers和heads两个维度上取平均
-#                 ax_avg_all = fig.add_subplot(gs_p2[0:6, 1:7])
-#                 attn_data_all_avg = steps_attention_maps[step_idx, :, 0].mean(axis=(0, 1)) # shape: (seq, seq)
-#
-#                 plot_single_attention_map_on_ax(
-#                     ax=ax_avg_all,
-#                     attention_map_data=attn_data_all_avg,
-#                     title=f"All {n_layers} Layers Avg",
-#                     prompt_len=n_prompt_tokens,
-#                     transfers=transfer_idxs[step_idx]
-#                 )
-#
-#                 # 在右侧绘制多张中间layers的heads平均attention_map
-#                 # layers_to_plot = np.linspace(0, n_layers - 1, 12, dtype=int)
-#                 # for i, layer_idx in enumerate(layers_to_plot):
-#                 #     # 在右侧小子ax上绘制当前layer的头平均attention_map
-#                 #     ax_nested = fig.add_subplot(gs_p2[i // 6, 2 + i % 6])
-#                 #     attn_data_avg = steps_attention_maps[step_idx, layer_idx, 0].mean(axis=0)
-#                 #
-#                 #     plot_single_attention_map_on_ax(
-#                 #         ax=ax_nested,
-#                 #         attention_map_data=attn_data_avg,
-#                 #         title=f"Layer {layer_idx+1}", # 标题可以简化
-#                 #         prompt_len=n_prompt_tokens,
-#                 #         transfers=transfer_idxs[step_idx]
-#                 #     )
-#
-#                 # --- 3. 在最底部的区域专门放文字信息 ---
-#                 gs_p3 = gridspec.GridSpecFromSubplotSpec(1, 2, subplot_spec=gs_main[2, 0], wspace=0.1, hspace=0.1)
-#                 # prompt区域
-#                 ax_prompt = fig.add_subplot(gs_p3[0, 0]) # 占据第三行
-#                 ax_prompt.axis('off')
-#                 ax_prompt.text(
-#                     0.5,  # x坐标 (0=最左, 1=最右)
-#                     0.5,   # y坐标 (0=最下, 1=最上)
-#                     f"Prompt: {prompt if len(prompt)<=2000 else prompt[:2000]+'...'}\n ",
-#                     transform=ax_prompt.transAxes, # 使用相对于ax自身的坐标系，非常方便
-#                     fontsize=20,
-#                     horizontalalignment='center', # 新增：水平对齐方式设为居中
-#                     verticalalignment='center',   # 修改：垂直对齐方式设为居中
-#                 )
-#                 # answer区域
-#                 ax_answer = fig.add_subplot(gs_p3[0, 1]) # 占据第三行
-#                 ax_answer.axis('off')
-#                 ax_answer.text(
-#                     0.5,  # x坐标 (0=最左, 1=最右)
-#                     0.5,   # y坐标 (0=最下, 1=最上)
-#                     f"Answer: {answer if len(answer)<=2000 else answer[:2000]+'...'}\n ",
-#                     transform=ax_answer.transAxes, # 使用相对于ax自身的坐标系，非常方便
-#                     fontsize=20,
-#                     horizontalalignment='center', # 新增：水平对齐方式设为居中
-#                     verticalalignment='center',   # 修改：垂直对齐方式设为居中
-#                 )
-#
-#                 # 设置总标题
-#                 fig.suptitle(f"Detailed Analysis for Step {step_idx + 1}/{steps}\n", fontsize=24)
-#
-#                 # 保存图像，为每个prompt创建一个子文件夹
-#                 if file_save:
-#                     save_path = os.path.join(prompt_output_dir, f"step_{step_idx + 1}.png")
-#                     plt.savefig(save_path)
-#
-#                 if console_show:
-#                     plt.show()
-#
-#                 plt.close(fig) # 必须关闭，否则会在内存中累积
-#             if file_save:
-#                 print(f"attention_maps saved to {prompt_output_dir}")
-#         # 清空已处理过的attention_map，为下一个prompt做准备
-#         if key in cache:
-#           cache[key] = []
 
 
