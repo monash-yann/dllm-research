@@ -195,7 +195,7 @@ if __name__ == "__main__":
         temperature=0.0,
         max_exploration_steps=10,
         exploration_N=2,
-        exploration_M=3,
+        exploration_M=2,
         exploration_threshold=0.25,
         acceleration_parallel_method='fixed',
         acceleration_threshold=0.9,
@@ -211,22 +211,26 @@ if __name__ == "__main__":
     # 用户传入的kwargs覆盖默认参数
     sampler = MRSampler.from_path(model_path, config=config, device=device, torch_dtype=torch.bfloat16)
 
-    sampler.max_exploration_steps = 10
-    sampler.exploration_N = 2
     # exploration_thresholds = [0.05, 0.15, 0.3, 0.5]
     # exploration_thresholds = [0.2, 0.25]  -> No Positionals Weights下, 0.25表现最好
-    exploration_thresholds = [0.25, 0.1, 0.15, 0.35]
-    for et in exploration_thresholds:
-        sampler.exploration_threshold = et
-        # output_dir = f"./imgs/Test/gsm8k_s256/N{sampler.exploration_N}E{sampler.max_exploration_steps}_ET{et}_DPimin{sampler.initial_min_weight}_V1"
-        output_dir = f"imgs/Test/gsm8k_s256/N{sampler.exploration_N}E{sampler.max_exploration_steps}_ET{et}_APM{sampler.acceleration_parallel_method}_V1"
-        run_gen_until(
-            sampler=sampler,
-            prompts=gsm8k_prompts[:3],
-            max_steps=256,
-            gen_length=256,
-            output_dir=output_dir,
-            console_show=False, file_save=True, vis_overall=True, vis_attn_map=False
-        )
+    # exploration_thresholds = [0.25, 0.1, 0.15, 0.35]
+    # exploration_thresholds = [0.15, 0.35]
+    exploration_thresholds = [0.25]
+    exploration_Ns = [3]
+
+    for exp_tr in exploration_thresholds:
+        sampler.exploration_threshold = exp_tr
+        for exp_N in exploration_Ns:
+            sampler.exploration_N = exp_N
+            # output_dir = f"./imgs/Test/gsm8k_s256/N{sampler.exploration_N}E{sampler.max_exploration_steps}_ET{et}_DPimin{sampler.initial_min_weight}_V1"
+            output_dir = f"imgs/Test/gsm8k_s256/N{sampler.exploration_N}E{sampler.max_exploration_steps}_ET{exp_tr}_APM{sampler.acceleration_parallel_method}_VTEST"
+            run_gen_until(
+                sampler=sampler,
+                prompts=gsm8k_prompts[:10],
+                max_steps=256,
+                gen_length=256,
+                output_dir=output_dir,
+                console_show=False, file_save=True, vis_overall=True, vis_attn_map=False
+            )
 
 

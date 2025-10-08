@@ -250,31 +250,38 @@ class MRSampler(BaseSampler):
                         else:
                             left, right = found_interval_in_memory
                         # 向左扩张...
-                        consecutive_failures = 0
+                        n_consecutive_failures = 0
+                        # for i in range(left - 1, prompt_len - 1, -1):
+                        #     if pre_demasked_index[b, i]: #碰到demask已被demask的位置停止
+                        #         break
+                        #     # if conf_temp[b, i] > self.exploration_threshold:
+                        #     if conf_temp[b, i] > min(self.exploration_threshold, seed_conf):
+                        #         left = i
+                        #         n_consecutive_failures = 0
+                        #     else:
+                        #         n_consecutive_failures += 1
+                        #         if n_consecutive_failures > self.exploration_M:
+                        #             break
                         for i in range(left - 1, prompt_len - 1, -1):
-                            if pre_demasked_index[b, i]: #碰到demask已被demask的位置停止
-                                break
-                            # if conf_temp[b, i] > self.exploration_threshold:
-                            if conf_temp[b, i] > min(self.exploration_threshold, seed_conf / 2):
-                                left = i
-                                consecutive_failures = 0
-                            else:
-                                consecutive_failures += 1
-                                if consecutive_failures > self.exploration_M:
+                            if pre_demasked_index[b, i] or conf_temp[b, i] < min(self.exploration_threshold, seed_conf): #碰到demask已被demask的位置停止
+                                n_consecutive_failures += 1
+                                if n_consecutive_failures > self.exploration_M:
                                     break
+                            else:
+                                n_consecutive_failures = 0
+                            left = i
+                        left += pre_demasked_index[b, left: left + self.exploration_M].sum().item()  # re-pull
                         # 向右扩张...
-                        consecutive_failures = 0
+                        n_consecutive_failures = 0
                         for i in range(right + 1, x.shape[1]):
-                            if pre_demasked_index[b, i]: #碰到demask已被demask的位置停止
-                                break
-                            # if conf_temp[b, i] > self.exploration_threshold:
-                            if conf_temp[b, i] > min(self.exploration_threshold, seed_conf / 2):
-                                right = i
-                                consecutive_failures = 0
-                            else:
-                                consecutive_failures += 1
-                                if consecutive_failures > self.exploration_M:
+                            if pre_demasked_index[b, i] or conf_temp[b, i] < min(self.exploration_threshold, seed_conf): #碰到demask已被demask的位置停止
+                                n_consecutive_failures += 1
+                                if n_consecutive_failures > self.exploration_M:
                                     break
+                            else:
+                                n_consecutive_failures = 0
+                            right = i
+                        right -= pre_demasked_index[b, right - self.exploration_M + 1: right + 1].sum().item()  # re-pull
                         # 本轮收集到区间: memory中原对应区间的拓展 + 本轮探索新开区间
                         intervals.append((left, right)) # 左右双闭 [left, right]
 
@@ -336,17 +343,27 @@ class MRSampler(BaseSampler):
             # 左侧搜索范围
             left_search_min = max(prompt_len, start - math.ceil(delta / 2))
             left = start
+            n_hit_wall = 0
             for pos in range(start - 1, left_search_min - 1, -1):
                 if x[0, pos] != self.mask_id:
-                    break
+                    n_hit_wall += 1
+                    if n_hit_wall > self.exploration_M:
+                        break
+                else:
+                    n_hit_wall = 0
                 left = pos
             # 右侧搜索范围
             rest_delta = delta - (start - left)
             right_search_max = min(x.shape[1] - 1, end + rest_delta)
             right = end
+            n_hit_wall = 0
             for pos in range(end + 1, right_search_max + 1):
                 if x[0, pos] != self.mask_id:
-                    break
+                    n_hit_wall += 1
+                    if n_hit_wall > self.exploration_M:
+                        break
+                else:
+                    n_hit_wall = 0
                 right = pos
             # 补左搜索(左扩已==delta/2，右扩<delta/2<=rest_delta，剩余格再分配到左)
             rest_delta = rest_delta - (right - end)
@@ -472,7 +489,7 @@ class MRSampler(BaseSampler):
                 # 更新策略2[保底]: 若区间内元素不达解码阈值但仍高于最低阈值(可以直接是探索区间的阈值), 则进行top-k保守(conservative)更新
                 n_cons_updated = 0
                 cons_transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-                cons_min_k = max(1, self.min_k // n_active_intervals)
+                cons_min_k = max(1, self.exploration_N // n_active_intervals)
                 if n_para_updated < cons_min_k:
                     confidence_for_topk = confidence_in_curr_zone.clone()
                     # 排除已经为True的位置
@@ -495,7 +512,7 @@ class MRSampler(BaseSampler):
                   f"total_n_updated({total_n_para_updated + total_n_cons_updated}) = total_n_para_updated({total_n_para_updated}) + total_n_cons_updated({total_n_cons_updated})")
 
             # 单轮更新数低于设置阈值，提前退出加速阶段
-            if total_n_para_updated + total_n_cons_updated < self.min_k:
+            if total_n_para_updated + total_n_cons_updated < self.exploration_N:
                 GG = True
             if not GG:
                 x[transfer_index] = x0[transfer_index]
@@ -699,13 +716,13 @@ class MRSampler(BaseSampler):
 
 def main():
     set_seed(1234)
-    device = 'cuda:0'
+    device = 'cuda:2'
     model_path = "../models/LLaDA-8B-Instruct"
 
     # 4-shot prompt
     few_shot_filename = "../prompts/gsm8k_shot.txt"
     with open(few_shot_filename, "r", encoding="utf-8") as f:
-        prompts= f.readlines()[0:3]
+        prompts= f.readlines()[3:10]
 
     # base prompt
     # gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
@@ -716,8 +733,8 @@ def main():
         cfg_scale=0.0,
         temperature=0.0,
         max_exploration_steps=10,
-        exploration_N=2,
-        exploration_M=3,
+        exploration_N=4,
+        exploration_M=2,
         exploration_threshold=0.25,
         acceleration_parallel_method='fixed',
         acceleration_threshold=0.9,

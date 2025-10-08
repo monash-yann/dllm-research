@@ -11,7 +11,7 @@ PROJECT_ROOT="/homebck/home/xiangzhong_guest/LLADA/llada_sampling_system"
 MODEL_PATH="/homebck/home/xiangzhong_guest/LLADA/llada_sampling_system/models/LLaDA-8B-Instruct"
 
 # available gpus
-GPU_IDS=(1 2)
+GPU_IDS=(0 1 2)
 MASTER_PORT=8086
 
 TASKS="gsm8k"
@@ -33,10 +33,11 @@ NUM_FEWSHOT=4
 #        cfg_scale=0.0,
 #        temperature=0.0,
 #        max_exploration_steps=10,
-#        exploration_N=2,
-#        exploration_M=3,
+#        exploration_N=3,
+#        exploration_M=2,
 #        exploration_threshold=0.25,
-#        acceleration_threshold=0.8,
+#        acceleration_parallel_method='fixed',
+#        acceleration_threshold=0.9,
 #        acceleration_low_threshold=0.6,
 #        acceleration_factor=0.6,
 #        max_mopup_steps=10,
@@ -44,15 +45,15 @@ NUM_FEWSHOT=4
 #        mopup_speed=2,
 #        positional_weights_type='none',
 #        max_weight=1.0,
-#        initial_min_weight=0.1
+#        initial_min_weight=0.1,
 #    )
 
 # sampler parameters
 CFG_SCALE=0.0
 TEMPERATURE=0.0
 MAX_EXPLORATION_STEPS=10
-EXPLORATION_N=2
-EXPLORATION_M=3
+EXPLORATION_N=5
+EXPLORATION_M=2
 EXPLORATION_THRESHOLD=0.25
 ACCELERATION_PARALLEL_METHOD='fixed'
 ACCELERATION_FACTOR=1
@@ -67,7 +68,7 @@ STEPS=256
 
 
 MODEL_NAME=$(basename "$MODEL_PATH")
-OUTPUT_DIR="eval/outputs/${MODEL_NAME}_N${EXPLORATION_N}_E${MAX_EXPLORATION_STEPS}_APM${ACCELERATION_PARALLEL_METHOD}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/"
+OUTPUT_DIR="eval/outputs/${MODEL_NAME}_N${EXPLORATION_N}_E${MAX_EXPLORATION_STEPS}_APM${ACCELERATION_PARALLEL_METHOD}_V2Test_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/"
 #OUTPUT_DIR="eval/outputs/${MODEL_NAME}_BIG_TEST/${TASKS}"
 rm -rf $OUTPUT_DIR
 mkdir -p $OUTPUT_DIR
@@ -117,7 +118,7 @@ stdbuf -o0 conda run -n "$CONDA_ENV_NAME" --no-capture-output \
     --num_processes $NUM_GPUS \
     --main_process_port $MASTER_PORT \
     -m eval.eval_model.eval_MR \
-      --model llada_sampler \
+      --model eval_sampler \
       --tasks $TASKS \
       --num_fewshot $NUM_FEWSHOT\
       --batch_size $BATCH_SIZE \

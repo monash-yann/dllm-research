@@ -16,29 +16,9 @@ from sampler.BaseSampler import BaseSampler, SamplerConfig, GenerationMetrics, G
 from dataclasses import dataclass, fields, asdict, field
 
 @dataclass
-class LLaDASamplerConfig(SamplerConfig):
+class PureLLaDASamplerConfig(SamplerConfig):
     block_length: int = 256
     remasking: Literal["random", "low_confidence"] = "low_confidence"
-
-@dataclass
-class GenerationMetrics:
-    """用于存储单次生成过程的性能指标"""
-    use_seconds: float
-    use_steps: int
-    n_gen_tokens: int
-    tokens_per_second: float
-    step_reduction_ratio: float
-
-@dataclass
-class GenerateOutput:
-    out: torch.Tensor
-    metrics: GenerationMetrics
-    # 以下为用于调试和分析的详细过程数据，默认为空列表，以防不需要时占用内存
-    outputs: List[np.ndarray] = field(default_factory=list)
-    confidences: List[np.ndarray] = field(default_factory=list)
-    transfer_idxs: List[np.ndarray] = field(default_factory=list)
-    phase_states: List= field(default_factory=list)
-    exploration_intervals: List = field(default_factory=list)
 
 
 class PureLLaDASampler(BaseSampler):
@@ -181,7 +161,7 @@ def main():
     # prompts = gsm8k_dataset['test']['question'][2:3]
 
     # --- 使用类进行生成 ---
-    config = LLaDASamplerConfig(
+    config = PureLLaDASamplerConfig(
         block_length=256,
         remasking="low_confidence"
     )

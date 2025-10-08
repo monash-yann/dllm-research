@@ -9,6 +9,9 @@ from typing import List
 
 import accelerate
 import torch
+import re
+from pathlib import Path
+import random
 import numpy as np
 import torch.nn.functional as F
 from datasets import Dataset
@@ -20,11 +23,94 @@ from tqdm import tqdm
 
 from transformers import AutoTokenizer, AutoModel
 from sampler.MRSampler import MRSampler, MRSamplerConfig, GenerateOutput, GenerationMetrics
-from eval.eval_model.eval_base import BaseEvalHarness, set_seed
 
 
-@register_model("eval_sampler")
-class MRSamplerEvalHarness():
+
+def set_seed(seed):
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+class BaseEvalHarness(LM):
+
+    def __init__(
+        self,
+        model_path: str = './model_cache',
+        batch_size=1,
+        mc_num=128,
+        steps=256,
+        gen_length=256,
+        device="cuda",
+        **kwargs,
+    ):
+        super().__init__()
+
+        print(f"!!! [DEBUG]: Running evaluation with args: \n{kwargs}")
+        print(f"mc_num: {mc_num}\n"
+              f"batch_size: {batch_size}\n"
+              f"steps: {steps}\n"
+              f"gen_length: {gen_length}\n")
+
+        # 设置多gpu框架
+        accelerator = accelerate.Accelerator()
+        if accelerator.num_processes > 1:
+            self.accelerator = accelerator
+        else:
+            self.accelerator = None
+        if self.accelerator is not None:
+            print(f"device_map: {self.accelerator.device}")
+
+        sampler_config_fields = {f.name for f in fields(MRSamplerConfig)}
+        sampler_kwargs = {
+            key: kwargs[key]
+            for key in sampler_config_fields
+            if key in kwargs
+        }
+        sampler_config = MRSamplerConfig(**sampler_kwargs)
+
+        self.sampler = MRSampler.from_path(
+            model_path,
+            config=sampler_config
+        )
+        self.sampler.model.eval()
+
+        # assign model to devices by accelerator
+        if self.accelerator is not None:
+            self.sampler = self.accelerator.prepare(self.sampler)
+            self._rank = self.accelerator.local_process_index
+            self._world_size = self.accelerator.num_processes\
+
+        self.sampler.model = self.sampler.model.to(device)
+        self.sampler.model.eval()
+        self.device = self.sampler.model.device  # 从最终的模型获取最准确的设备信息
+
+        self.mc_num = mc_num
+        self.batch_size = int(batch_size)
+        assert mc_num % self.batch_size == 0
+        self.sampling_eps = 0.
+        self.gen_length = gen_length
+        self.steps = steps
+
+        self.overall_metrics: List[GenerationMetrics] = []
+        self.output_dir = kwargs['output_dir']
+
+        # 将不在主线程的标准输出和标准错误重定向到空设备
+        if not self.accelerator.is_main_process:
+            f = open(os.devnull, 'w')
+            sys.stdout = f
+            sys.stderr = f
+
+    @property
+    def rank(self):
+        return self._rank
+
+    @property
+    def world_size(self):
+        return self._world_size
 
     def _forward_process(self, batch, prompt_index):
         b, l = batch.shape
@@ -207,6 +293,9 @@ class MRSamplerEvalHarness():
 
             # accumulate metrics
             metrics = OUT.metrics
+            # self.total_use_steps += metrics.use_steps
+            # self.total_use_seconds += metrics.use_seconds
+            # self.total_n_gen_tokens += metrics.n_gen_tokens
             self.overall_metrics.append(metrics)
 
             if self.accelerator is not None:
