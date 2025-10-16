@@ -1,3 +1,4 @@
+import codecs
 from typing import List, Tuple, Dict, Any, Literal
 from torch import Tensor
 
@@ -51,6 +52,16 @@ class PureLLaDASampler(BaseSampler):
         assert gen_length <= self.model_max_genlength, f"gen_length must <= model_max_genlength({self.model_max_genlength})"
         assert max_steps <= self.model_max_steps, f"max_steps must <= model_max_steps({self.model_max_steps})"
 
+        # initalize positional weights
+        if self.positional_weights_type == 'absolute':
+            self.absolute_positional_weights = self.precompute_absolute_positional_weights(
+                max_steps=max_steps, gen_length=gen_length, device=self.model.device, dtype=torch.float32
+            )
+        elif self.positional_weights_type == 'ratio':
+            pass
+        else:
+            pass
+
         # 主循环 (探索与加速)
         outputs = []
         confidences = []
@@ -58,11 +69,11 @@ class PureLLaDASampler(BaseSampler):
         phase_states = []  # [{'phase':'exploration/acceleration/mopup', 'range': (start, end)}]
         exploration_intervals = []  # [{'inceptive_step': 0, 'history_intervals': [[(start, end), ...], [(start, end), ...], ...]}]
         accumulated_steps = 0
-
+        prompt_len = prompt.shape[1]
         start_time = time.perf_counter()
-
-        x = torch.full((1, prompt.shape[1] + gen_length), self.mask_id, dtype=torch.long).to(self.model.device)
-        x[:, :prompt.shape[1]] = prompt.clone()
+        
+        x = torch.full((1, prompt_len + gen_length), self.mask_id, dtype=torch.long).to(self.model.device)
+        x[:, :prompt_len] = prompt.clone()
         prompt_index = (x != self.mask_id)
 
         assert gen_length % self.block_length == 0
@@ -72,7 +83,7 @@ class PureLLaDASampler(BaseSampler):
         max_steps = max_steps // num_blocks
 
         for num_block in range(num_blocks):
-            block_mask_index = (x[:, prompt.shape[1] + num_block * self.block_length: prompt.shape[1] + (
+            block_mask_index = (x[:, prompt_len + num_block * self.block_length: prompt_len + (
                         num_block + 1) * self.block_length:] == self.mask_id)
             num_transfer_tokens = get_num_transfer_tokens(block_mask_index, max_steps)  # 得到要demask的token数
 
@@ -109,18 +120,33 @@ class PureLLaDASampler(BaseSampler):
                 else:
                     raise NotImplementedError(self.remasking)
 
-                x0_p[:, prompt.shape[1] + (num_block + 1) * self.block_length:] = -np.inf
+                x0_p[:, prompt_len + (num_block + 1) * self.block_length:] = -np.inf
 
                 x0 = torch.where(mask_index, x0, x)  # demask
 
                 confidence = torch.where(mask_index, x0_p, -np.inf)
+                # applying positional weights
+                if self.positional_weights_type == 'absolute':
+                    confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.absolute_positional_weights[num_block * max_steps + i]
+                elif self.positional_weights_type == 'ratio':
+                    unmasked_ratio = (x[:, prompt_len:] != self.mask_id).sum().item() / gen_length
+                    dynamic_positional_weights = self.compute_dynamic_positional_weights(gen_length, unmasked_ratio, device=x0.device)
+                    confidence[:, prompt_len:] = confidence[:, prompt_len:] * dynamic_positional_weights
+                else:
+                    pass
+                
                 # 此处输出当前step中mask处的预测置信度
-
                 transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
                 for j in range(confidence.shape[0]):
                     _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, i])
                     transfer_index[j, select_index] = True
                 x[transfer_index] = x0[transfer_index]
+
+                # collecting states
+                outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
+                confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
+                transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
+
 
         # compute metrics
         end_time = time.perf_counter()
@@ -148,13 +174,21 @@ class PureLLaDASampler(BaseSampler):
 
 def main():
     set_seed(1234)
-    device = 'cuda:1'
+    device = 'cuda:0'
     model_path = "../models/LLaDA-8B-Instruct"
 
     # 4-shot prompt
     few_shot_filename = "../prompts/gsm8k_shot.txt"
+    prompts = []
     with open(few_shot_filename, "r", encoding="utf-8") as f:
-        prompts= f.readlines()[0:3]
+        for line in f:
+            # python会把.txt中的字符当作原始字符串，此处转为普通字符串
+            corrected_line = line.replace('\\n', '\n')
+            prompts.append(corrected_line)
+    # prompts = [codecs.decode(line, 'unicode_escape') for line in lines]
+
+    # prompts = [prompts[2], prompts[6]]
+    prompts = [prompts[0]]
 
     # base prompt
     # gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
@@ -162,6 +196,11 @@ def main():
 
     # --- 使用类进行生成 ---
     config = PureLLaDASamplerConfig(
+        cfg_scale=0.0,
+        temperature=0.0,
+        positional_weights_type='ratio',
+        max_weight=1.0,
+        initial_min_weight=0.1,
         block_length=256,
         remasking="low_confidence"
     )
@@ -178,10 +217,12 @@ def main():
         print('=' * 20 + f" Generating prompt_idx: {i} " + "=" * 20)
         tokenizer = sampler.tokenizer
 
+        print(prompt_text)
         m = [{"role": "user", "content": prompt_text}]
         prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
         input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
 
+        print(prompt_str)
         OUT = sampler.generate(input_ids, gen_length=max_gen_steps, max_steps=max_gen_steps)
         out = OUT.out
         ans = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]

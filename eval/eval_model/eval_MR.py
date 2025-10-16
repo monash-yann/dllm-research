@@ -18,245 +18,38 @@ from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
 from tqdm import tqdm
 
-from transformers import AutoTokenizer, AutoModel
-from sampler.MRSampler import MRSampler, MRSamplerConfig, GenerateOutput, GenerationMetrics
-from eval.eval_model.eval_base import BaseEvalHarness, set_seed
+from sampler.MRSampler import MRSampler, MRSamplerConfig
+from eval.eval_model.eval_base import set_seed, BaseEvalHarness
 
 
 @register_model("eval_sampler")
-class MRSamplerEvalHarness():
+class MRSamplerEvalHarness(BaseEvalHarness):
+    def __init__(
+            self,
+            model_path: str = './model_cache',
+            device="cuda",
+            batch_size=1,
+            mc_num=128,
+            steps=256,
+            gen_length=256,
+            **kwargs,
+    ):
 
-    def _forward_process(self, batch, prompt_index):
-        b, l = batch.shape
-
-        target_len = (l - prompt_index.sum()).item()
-        k = torch.randint(1, target_len + 1, (), device=batch.device)
-
-        x = torch.round(torch.linspace(float(k), k + (b - 1) * (target_len / b), steps=b, device=batch.device)).long()
-        x = ((x - 1) % target_len) + 1
-        assert x.min() >= 1 and x.max() <= target_len
-
-        indices = torch.arange(target_len, device=batch.device).repeat(b, 1)
-        is_mask = indices < x.unsqueeze(1)
-
-        for i in range(b):
-            is_mask[i] = is_mask[i][torch.randperm(target_len)]
-
-        is_mask = torch.cat((torch.zeros(b, prompt_index.sum(), dtype=torch.bool, device=batch.device), is_mask), dim=1)
-
-        noisy_batch = torch.where(is_mask, self.mask_id, batch)
-
-        return noisy_batch, (x / target_len).unsqueeze(1).repeat(1, l)
-
-    @torch.no_grad()
-    def get_logits(self, batch, prompt_index):
-        if self.cfg > 0.:
-            assert len(prompt_index) == batch.shape[1]
-            prompt_index = prompt_index.unsqueeze(0).repeat(batch.shape[0], 1)
-            un_batch = batch.clone()
-            un_batch[prompt_index] = self.mask_id
-            batch = torch.cat([batch, un_batch])
-
-        logits = self.model(batch).logits
-
-        if self.cfg > 0.:
-            logits, un_logits = torch.chunk(logits, 2, dim=0)
-            logits = un_logits + (self.cfg + 1) * (logits - un_logits)
-        return logits[:, :batch.shape[1]]
-
-    @torch.no_grad()
-    def get_loglikelihood(self, prefix, target):
-        seq = torch.concatenate([prefix, target])[None, :]
-        seq = seq.repeat((self.batch_size, 1)).to(self.device)
-
-        prompt_index = torch.arange(seq.shape[1], device=self.device) < len(prefix)
-
-        loss_acc = []
-        for _ in range(self.mc_num // self.batch_size):
-            perturbed_seq, p_mask = self._forward_process(seq, prompt_index)
-
-            mask_indices = perturbed_seq == self.mask_id
-
-            logits = self.get_logits(perturbed_seq, prompt_index)
-
-            loss = F.cross_entropy(logits[mask_indices], seq[mask_indices], reduction='none') / p_mask[mask_indices]
-            loss = loss.sum() / self.batch_size
-            loss_acc.append(loss.item())
-
-        return - sum(loss_acc) / len(loss_acc)
-
-    @torch.no_grad()
-    def suffix_greedy_prediction(self, prefix, target):
-        if not self.is_check_greedy:
-            return False
-
-        seq = torch.full((1, len(prefix) + len(target)), self.mask_id, device=self.device)
-        prompt_index = torch.arange(seq.shape[1], device=self.device) < len(prefix)
-        prefix, target = prefix.to(self.device), target.to(self.device)
-        seq[0, :len(prefix)] = prefix
-
-        for i in range(len(target)):
-            mask_index = (seq == self.mask_id)
-            logits = self.get_logits(seq, prompt_index)[mask_index]
-            x0 = torch.argmax(logits, dim=-1)
-
-            p = torch.softmax(logits.to(torch.float32), dim=-1)
-            confidence = torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)).squeeze(dim=-1)
-            _, index = torch.sort(confidence, descending=True)
-            x0[index[1:]] = self.mask_id
-            seq[mask_index] = x0.clone()
-        correct = target == seq[0, len(prefix):]
-        correct = torch.all(correct)
-        return correct
-
-    def _encode_pair(self, context, continuation):
-        n_spaces = len(context) - len(context.rstrip())
-        if n_spaces > 0:
-            continuation = context[-n_spaces:] + continuation
-            context = context[:-n_spaces]
-
-        whole_enc = self.sampler.tokenizer(context + continuation)["input_ids"]
-        context_enc = self.sampler.tokenizer(context)["input_ids"]
-
-        context_enc_len = len(context_enc)
-        continuation_enc = whole_enc[context_enc_len:]
-
-        return context_enc, continuation_enc
-
-    # PPL
-    def loglikelihood_rolling(self, requests):
-        raise NotImplementedError
-
-    # multiple choices
-    def loglikelihood(self, requests):
-        def _tokenize(e):
-            prefix, target = self._encode_pair(e["prefix"], e["target"])
-            return {
-                "prefix_text": e["prefix"],
-                "target_text": e["target"],
-                "prefix": prefix,
-                "target": target,
-            }
-
-        ds = [{"prefix": req.args[0], "target": req.args[1]} for req in requests]
-        ds = Dataset.from_list(ds)
-        ds = ds.map(_tokenize)
-        ds = ds.with_format("torch")
-        prompt_len = [len(x["prefix"]) + len(x["target"]) for x in ds]
-
-        assert max(prompt_len) <= 4096
-
-        on_main_process = self.accelerator is None or self.accelerator.is_main_process
-        out = []
-        with torch.no_grad():
-            for i, elem in enumerate(tqdm(ds, desc="Computing likelihood..."), disable=on_main_process):
-                prefix = elem["prefix"]
-                target = elem["target"]
-
-                ll = self.get_loglikelihood(prefix, target)
-
-                is_target_greedy_dec = self.suffix_greedy_prediction(prefix, target)
-
-                out.append((ll, 1.0 if is_target_greedy_dec else 0.0))
-        torch.cuda.empty_cache()
-        return out
-
-    # fixed answer
-    def generate_until(self, requests: list[Instance]):
-        tokenizer = self.sampler.tokenizer
-
-        def _tokenize(e):
-            m = [{"role": "user", "content": e["question"]}]
-            prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
-            input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids
-            # print(f"{'='*20} input_ids.shape: {input_ids.shape} {'='*20}")
-            return {
-                "input_ids": input_ids,
-                "question_text": e["question"],
-                "until": e["until"],
-            }
-
-        ds = [{"question": req.args[0], "until": req.args[1]['until']} for req in requests]
-        ds = Dataset.from_list(ds)
-        ds = ds.map(_tokenize)
-        ds = ds.with_format("torch")
-
-        on_main_process = self.accelerator is None or self.accelerator.is_main_process
-        out = []
-        for elem in tqdm(ds, desc="Generating...", disable=not on_main_process):
-            prompt = elem["input_ids"].to(self.device)
-            # print(f"\n{'=' * 20} prompt.shape: {prompt.shape} {'=' * 20}")
-            stop_tokens = elem["until"]
-            stop_tokens.append(tokenizer.eos_token)
-
-            # print('#' * 20 + f"the prompt is: {elem['question_text']}" + '#' * 20)
-            OUT: GenerateOutput = self.sampler.generate(prompt, gen_length=self.gen_length, max_steps=self.steps)
-            generated_answer = OUT.out
-            generated_answer = tokenizer.decode(generated_answer[0][prompt.shape[1]:], skip_special_tokens=False)
-            # print('#' * 20 + f"generated_answer: {generated_answer}" + '#' * 20)
-            for stop_seq in stop_tokens:
-                if stop_seq in generated_answer:
-                    generated_answer = generated_answer.split(stop_seq)[0]
-            if on_main_process:
-                print('#' * 20 + f"generated_answer after spliting: {generated_answer}" + '#' * 20)
-
-            # remove special tokens
-            generated_answer_ids = tokenizer(generated_answer)["input_ids"]
-            generated_answer = tokenizer.decode(generated_answer_ids, skip_special_tokens=True)
-            out.append(generated_answer)
-
-            # accumulate metrics
-            metrics = OUT.metrics
-            self.overall_metrics.append(metrics)
-
-            if self.accelerator is not None:
-                self.accelerator.wait_for_everyone()
-
-        return out
-
-    def __del__(self):
-        """
-        析构函数，在评估任务结束、对象被销毁时自动调用。
-        用于聚合所有自定义指标并写入JSON文件。
-        """
-        # 仅在主进程上执行聚合和写入操作，避免多GPU时重复写入
-        overall_metrics: List[GenerationMetrics] = []
-        if self.accelerator is not None:
-            print(f"[Info] Collecting metrics......")
-            overall_metrics = self.accelerator.gather_for_metrics(self.overall_metrics)
-
-            if self._rank != 0:
-                return
-            print(f"[Info] Gathered {len(overall_metrics)} metrics in total")
-
-        if not overall_metrics:
-            print("No overall metrics were collected. Skipping report generation.")
-            return
-
-        print(f"[Info] Computing metrics......")
-        total_use_seconds = 0
-        total_use_steps = 0
-        total_n_gen_tokens = 0
-        for metric in overall_metrics:
-            total_use_seconds += metric.use_seconds
-            total_use_steps += metric.use_steps
-            total_n_gen_tokens += metric.n_gen_tokens
-
-        summary_metrics = GenerationMetrics(
-            use_seconds=total_use_seconds,
-            use_steps=total_use_steps,
-            n_gen_tokens=total_n_gen_tokens,
-            tokens_per_second=(total_n_gen_tokens / total_use_seconds) if total_use_seconds > 0 else 0,
-            step_reduction_ratio=len(overall_metrics) * self.steps / total_use_steps if total_use_steps > 0 else 0
-        )
-        metrics_report = {
-            "summary": asdict(summary_metrics),
-            "per_sample": [asdict(metric) for metric in overall_metrics]
+        sampler_config_fields = {f.name for f in fields(MRSamplerConfig)}
+        sampler_kwargs = {
+            key: kwargs[key]
+            for key in sampler_config_fields
+            if key in kwargs
         }
+        sampler_config = MRSamplerConfig(**sampler_kwargs)
 
-        metrics_fpath = os.path.join(self.output_dir, "overall_metrics.json")
-        with open(metrics_fpath, 'w', encoding='utf-8') as f:
-            json.dump(metrics_report, f, indent=4, ensure_ascii=False)
+        sampler = MRSampler.from_path(
+            model_path,
+            config=sampler_config
+        )
+
+        super().__init__(model_path, batch_size, mc_num, steps, gen_length, sampler, **kwargs)
+
 
 if __name__ == "__main__":
     set_seed(1234)

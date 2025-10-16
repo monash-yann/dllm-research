@@ -1,7 +1,7 @@
 from glob import glob
 import json
 import re
-from eval.tasks.gsm8k import parse_gsm_answer
+from eval.unused.tasks.gsm8k import parse_gsm_answer
 from eval.utils.parsers import is_equiv
 
 def parse_answer(dataset, text):

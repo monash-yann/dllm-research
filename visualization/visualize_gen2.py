@@ -178,7 +178,7 @@ def run_gen_until(
 
 def visualize_MR():
     print(f"visualizing MR Sampler, current path: {os.path.abspath(__file__)}")
-    device = 'cuda:2'
+    device = 'cuda:0'
 
     # 提示词替换，与4-shot的行为保持一致
     few_shot_filename = "../prompts/gsm8k_shot.txt"
@@ -198,15 +198,15 @@ def visualize_MR():
         cfg_scale=0.0,
         temperature=0.0,
         max_exploration_steps=10,
-        exploration_N=6,
+        exploration_N=5,
         exploration_M=2,
         exploration_threshold=0.25,
         acceleration_parallel_method='fixed',
         acceleration_threshold=0.9,
         acceleration_low_threshold=0.6,
         acceleration_factor=0.6,
-        max_mopup_steps=50,
-        mopup_gate_ratio=0.85,
+        max_mopup_steps=10,
+        mopup_gate_ratio=0.9,
         mopup_speed=2,
         positional_weights_type='none',
         max_weight=1.0,
@@ -215,12 +215,8 @@ def visualize_MR():
     # 用户传入的kwargs覆盖默认参数
     sampler = MRSampler.from_path(model_path, config=config, device=device, torch_dtype=torch.bfloat16)
 
-    # exploration_thresholds = [0.05, 0.15, 0.3, 0.5]
-    # exploration_thresholds = [0.2, 0.25]  -> No Positionals Weights下, 0.25表现最好
-    # exploration_thresholds = [0.25, 0.1, 0.15, 0.35]
-    # exploration_thresholds = [0.15, 0.35]
     exploration_thresholds = [0.25]
-    exploration_Ns = [6,3]
+    exploration_Ns = [5]
 
     sampler.positional_weights_type = 'none'
     for exp_tr in exploration_thresholds:
@@ -228,10 +224,10 @@ def visualize_MR():
         for exp_N in exploration_Ns:
             sampler.exploration_N = exp_N
             # output_dir = f"./imgs/Test/gsm8k_s256/N{sampler.exploration_N}E{sampler.max_exploration_steps}_ET{et}_DPimin{sampler.initial_min_weight}_V1"
-            output_dir = f"imgs/Test/gsm8k_s256/N{sampler.exploration_N}E{sampler.max_exploration_steps}_ET{exp_tr}_APM{sampler.acceleration_parallel_method}_PWT{sampler.positional_weights_type}_imw${sampler.initial_min_weight}_V4Test"
+            output_dir = f"imgs/Test/gsm8k_s256/N{sampler.exploration_N}E{sampler.max_exploration_steps}_ET{exp_tr}_APM{sampler.acceleration_parallel_method}_PWT{sampler.positional_weights_type}_imw${sampler.initial_min_weight}_V3TEST"
             run_gen_until(
                 sampler=sampler,
-                prompts=gsm8k_prompts[:5],
+                prompts=gsm8k_prompts,
                 max_steps=256,
                 gen_length=256,
                 output_dir=output_dir,
@@ -251,7 +247,7 @@ def visualize_pure_llada():
             # python会把.txt中的字符当作原始字符串，此处转为普通字符串
             corrected_line = line.replace('\\n', '\n')
             gsm8k_prompts.append(corrected_line)
-    # gsm8k_prompts = gsm8k_prompts[:1]
+    gsm8k_prompts = gsm8k_prompts[:1]
 
     # 普通0-shot提示词
     # gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
@@ -279,7 +275,7 @@ def visualize_pure_llada():
         gen_length=256,
         output_dir=output_dir,
         device=device,
-        console_show=False, file_save=True, vis_overall=True, vis_attn_map=False,
+        console_show=False, file_save=True, vis_overall=True, vis_attn_map=True,
     )
 
 if __name__ == "__main__":

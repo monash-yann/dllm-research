@@ -12,12 +12,10 @@ import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
-from transformers import AutoTokenizer, AutoModel
 from peft import PeftModel
 
 from sampler.MRSampler import MRSampler
-from eval.tasks.gsm8k import GSM8KDataset, parse_gsm_answer
-from eval.tasks.math500 import MATH500Dataset, parse_math_answer
+from eval.unused.tasks.gsm8k import GSM8KDataset, parse_gsm_answer
 
 DATASET_MAP = {
     "gsm8k": GSM8KDataset,

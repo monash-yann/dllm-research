@@ -9,9 +9,6 @@ from typing import List
 
 import accelerate
 import torch
-import re
-from pathlib import Path
-import random
 import numpy as np
 import torch.nn.functional as F
 from datasets import Dataset
@@ -21,36 +18,30 @@ from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
 from tqdm import tqdm
 
-from transformers import AutoTokenizer, AutoModel
-
-from sampler.BaseSampler import BaseSampler, GenerateOutput, GenerationMetrics
-
+from sampler.MRSampler import MRSampler, MRSamplerConfig, GenerateOutput, GenerationMetrics
+from eval.eval_model.eval_base import set_seed
 
 
-
-def set_seed(seed):
-    torch.manual_seed(seed)
-    random.seed(seed)
-    np.random.seed(seed)
-
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-
-class BaseEvalHarness(LM):
-
+@register_model("eval_sampler")
+class MRSamplerEvalHarness(LM):
     def __init__(
-        self,
-        model_path: str = './model_cache',
-        batch_size=1,
-        mc_num=128,
-        steps=256,
-        gen_length=256,
-        sampler: BaseSampler = None,
-        device="cuda",
-        **kwargs,
+            self,
+            model_path: str = './model_cache',
+            device="cuda",
+            mc_num=128,
+            batch_size=1,
+            steps=256,
+            gen_length=256,
+            **kwargs,
     ):
+
         super().__init__()
+
+        print(f"!!! [DEBUG]: Running evaluation with args: \n{kwargs}")
+        print(f"mc_num: {mc_num}\n"
+              f"batch_size: {batch_size}\n"
+              f"steps: {steps}\n"
+              f"gen_length: {gen_length}\n")
 
         # 设置多gpu框架
         accelerator = accelerate.Accelerator()
@@ -60,18 +51,29 @@ class BaseEvalHarness(LM):
             self.accelerator = None
         if self.accelerator is not None:
             print(f"device_map: {self.accelerator.device}")
-            # 将不在主线程的标准输出和标准错误重定向到空设备
-            if not self.accelerator.is_main_process:
-                f = open(os.devnull, 'w')
-                sys.stdout = f
-                sys.stderr = f
+
+        sampler_config_fields = {f.name for f in fields(MRSamplerConfig)}
+        sampler_kwargs = {
+            key: kwargs[key]
+            for key in sampler_config_fields
+            if key in kwargs
+        }
+        sampler_config = MRSamplerConfig(**sampler_kwargs)
+
+        self.sampler = MRSampler.from_path(
+            model_path,
+            config=sampler_config
+        )
+        self.sampler.model.eval()
 
         # assign model to devices by accelerator
-        sampler.model.eval()
         if self.accelerator is not None:
-            self.sampler = self.accelerator.prepare(sampler)
+            self.sampler = self.accelerator.prepare(self.sampler)
             self._rank = self.accelerator.local_process_index
             self._world_size = self.accelerator.num_processes
+        # else:
+        #     self.sampler.model = self.sampler.model.to(device)
+
         self.sampler.model = self.sampler.model.to(device)
         self.sampler.model.eval()
         self.device = self.sampler.model.device  # 从最终的模型获取最准确的设备信息
@@ -82,18 +84,17 @@ class BaseEvalHarness(LM):
         self.sampling_eps = 0.
         self.gen_length = gen_length
         self.steps = steps
+        # self.block_length = block_length
 
+        # metrics
         self.overall_metrics: List[GenerationMetrics] = []
         self.output_dir = kwargs['output_dir']
 
-        self.is_instruct = True if 'instruct' in model_path.lower() else False
-
-        print(f"!!! [DEBUG]: Running evaluation with args: \n{kwargs}")
-        print(f"mc_num: {mc_num}\n"
-              f"batch_size: {batch_size}\n"
-              f"steps: {steps}\n"
-              f"gen_length: {gen_length}\n"
-              f"is_instruct: {self.is_instruct}\n")
+        # 将不在主线程的标准输出和标准错误重定向到空设备
+        if not self.accelerator.is_main_process:
+            f = open(os.devnull, 'w')
+            sys.stdout = f
+            sys.stderr = f
 
     @property
     def rank(self):
@@ -240,22 +241,30 @@ class BaseEvalHarness(LM):
 
     # fixed answer
     def generate_until(self, requests: list[Instance]):
+        tokenizer = self.sampler.tokenizer
+
+        def _tokenize(e):
+            m = [{"role": "user", "content": e["question"]}]
+            prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
+            input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids
+            # print(f"{'='*20} input_ids.shape: {input_ids.shape} {'='*20}")
+            return {
+                "input_ids": input_ids,
+                "question_text": e["question"],
+                "until": e["until"],
+            }
+
+        ds = [{"question": req.args[0], "until": req.args[1]['until']} for req in requests]
+        ds = Dataset.from_list(ds)
+        ds = ds.map(_tokenize)
+        ds = ds.with_format("torch")
 
         on_main_process = self.accelerator is None or self.accelerator.is_main_process
-        tokenizer = self.sampler.tokenizer
         out = []
-        for req in tqdm(requests, desc="Generating...", disable=not on_main_process):
-            question = req.args[0]
-            # treat as base_model on in humaneval dataset
-            if (not self.is_instruct) or ('task_id' in req.doc and str(req.doc['task_id']).lower().startswith('humaneval')):
-                prompt_str = question
-            else:
-                m = [{"role": "user", "content": question}]
-                prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
-            prompt = tokenizer(prompt_str, return_tensors="pt").input_ids.to(self.device)
-            # print(f"\n{'=' * 20} prompt_str: \n{prompt_str} {'=' * 20}")
-
-            stop_tokens = req.args[1]['until']
+        for elem in tqdm(ds, desc="Generating...", disable=not on_main_process):
+            prompt = elem["input_ids"].to(self.device)
+            # print(f"\n{'=' * 20} prompt.shape: {prompt.shape} {'=' * 20}")
+            stop_tokens = elem["until"]
             stop_tokens.append(tokenizer.eos_token)
 
             # print('#' * 20 + f"the prompt is: {elem['question_text']}" + '#' * 20)
@@ -276,6 +285,9 @@ class BaseEvalHarness(LM):
 
             # accumulate metrics
             metrics = OUT.metrics
+            # self.total_use_steps += metrics.use_steps
+            # self.total_use_seconds += metrics.use_seconds
+            # self.total_n_gen_tokens += metrics.n_gen_tokens
             self.overall_metrics.append(metrics)
 
             if self.accelerator is not None:

@@ -28,18 +28,29 @@ N_LIMIT=100
 BATCH_SIZE=1
 MC_NUM=128
 NUM_FEWSHOT=4
+GEN_LENGTH=256
+STEPS=256
 
+#    config = PureLLaDASamplerConfig(
+#        cfg_scale=0.0,
+#        temperature=0.0,
+#        block_length=256,
+#        remasking="low_confidence",
+#        positional_weights_type='ratio',
+#        max_weight=1.0,
+#        initial_min_weight=0.1,
+#    )
 # sampler parameters
 CFG_SCALE=0.0
 TEMPERATURE=0.0
-
+POSITIONAL_WEIGHTS_TYPE='ratio'
+MAX_WEIGHT=1.0
+INITIAL_MIN_WEIGHT=0.0
 BLOCK_LENGTH=256
-GEN_LENGTH=256
-STEPS=256
 REMASKING="low_confidence"
 
 MODEL_NAME=$(basename "$MODEL_PATH")
-OUTPUT_DIR="eval/outputs/${MODEL_NAME}_pure_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/"
+OUTPUT_DIR="eval/outputs/${MODEL_NAME}_pure_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/"
 rm -rf $OUTPUT_DIR
 mkdir -p $OUTPUT_DIR
 
@@ -50,11 +61,14 @@ MODEL_ARGS+=",output_dir=$OUTPUT_DIR"
 MODEL_ARGS+=",mc_num=$MC_NUM"
 MODEL_ARGS+=",gen_length=$GEN_LENGTH"
 MODEL_ARGS+=",steps=$STEPS"
-MODEL_ARGS+=",block_length=$BLOCK_LENGTH"
-MODEL_ARGS+=",remasking=$REMASKING"
 
 MODEL_ARGS+=",cfg_scale=$CFG_SCALE"
 MODEL_ARGS+=",temperature=$TEMPERATURE"
+MODEL_ARGS+=",positional_weights_type=$POSITIONAL_WEIGHTS_TYPE"
+MODEL_ARGS+=",max_weight=$MAX_WEIGHT"
+MODEL_ARGS+=",initial_min_weight=$INITIAL_MIN_WEIGHT"
+MODEL_ARGS+=",block_length=$BLOCK_LENGTH"
+MODEL_ARGS+=",remasking=$REMASKING"
 
 
 echo "================================================="

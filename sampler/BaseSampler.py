@@ -27,6 +27,10 @@ class SamplerConfig:
     # Generation general config
     model_max_genlength: int = 2048
     model_max_steps: int = 2048
+    # Positional weight config
+    positional_weights_type: Literal['absolute', 'ratio', 'none'] = 'none'
+    max_weight: float = 1.0
+    initial_min_weight: float = 0.1
 
 @dataclass
 class GenerationMetrics:
@@ -68,6 +72,72 @@ class BaseSampler:
         for field in fields(config):
             print(f"{field.name}: {getattr(config, field.name)}")
             setattr(self, field.name, getattr(config, field.name))
+
+
+    def precompute_absolute_positional_weights(
+        self,
+        max_steps: int,
+        gen_length: int,
+        device: torch.device = 'cuda',
+        dtype: torch.dtype = torch.float32
+    ) -> torch.Tensor:
+        """
+            precompute a weight matrix shaped (max_steps, gen_length)
+            每一行代表一个step的权重曲线，曲线随step增加而变得平缓。
+        """
+        assert gen_length > 0 and max_steps > 0, "gen_length and max_steps must > 0"
+        max_weight = self.max_weight
+        initial_min_weight = self.initial_min_weight
+        if gen_length == 1:
+            return torch.full((max_steps, gen_length), max_weight, device=device, dtype=dtype)
+
+        positions = torch.arange(gen_length, device=device, dtype=dtype).unsqueeze(0)  # (1, gen_length)
+        if max_steps == 1:
+            lambda_decay = -torch.log(torch.tensor(initial_min_weight, device=device, dtype=dtype)) / (gen_length - 1)
+            return torch.exp(-lambda_decay * positions)
+
+        # compute positional weights
+        steps = torch.arange(max_steps, device=device, dtype=torch.float32).unsqueeze(1)  # (max_steps, 1)
+        # compute min_weight on each step via linear interpolation
+        t = steps / (max_steps - 1)  # interpolation factor
+        min_weights = initial_min_weight + (max_weight - initial_min_weight) * t  # (max_steps, 1)
+        # compute lambda_decay on each step, according to t
+        lambda_decays = -torch.log(min_weights) / (gen_length - 1)  # (max_steps, 1)
+        # compute step_positional_weights via broadcasting
+        step_positional_weights = torch.exp(-lambda_decays * positions)  # (max_steps, gen_length)
+
+        return step_positional_weights
+
+
+    def compute_dynamic_positional_weights(
+        self,
+        gen_length: int,
+        unmasked_ratio: float,
+        ur_factor: float = 1.2,
+        device: torch.device = 'cuda',
+        dtype: torch.dtype = torch.float32
+    ) -> torch.Tensor:
+        """
+            compute a weight matrix shaped (gen_length,) for the current step based on unmasked_ratio
+        """
+        max_weight = self.max_weight
+        initial_min_weight = self.initial_min_weight
+
+        if gen_length == 1:
+            return torch.full((gen_length,), max_weight, device=device, dtype=dtype)
+
+        positions = torch.arange(gen_length, device=device, dtype=dtype)  # (gen_length, )
+
+        # compute min_weight based on unmasked_ratio
+        min_weight = min(1.0, initial_min_weight + ur_factor * unmasked_ratio)
+        # print(f"current unmasked_ratio: {unmasked_ratio:.2f}, min_weight: {min_weight:.2f}")
+        lambda_decay = - torch.log(torch.tensor(min_weight)) / (gen_length - 1)
+        # compute ratio_positional_weights
+        ratio_positional_weights = torch.exp(-lambda_decay * positions)  # (gen_length, )
+
+        # print(f"unmasked_ratio: {unmasked_ratio}, computed ratio_positional_weights: {ratio_positional_weights[::16].cpu().numpy()}")
+        return ratio_positional_weights
+
 
     @classmethod
     def from_path(
