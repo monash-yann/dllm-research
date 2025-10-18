@@ -248,6 +248,7 @@ class BaseEvalHarness(LM):
             question = req.args[0]
             # treat as base_model on in humaneval dataset
             if (not self.is_instruct) or ('task_id' in req.doc and str(req.doc['task_id']).lower().startswith('humaneval')):
+            # if (not self.is_instruct):
                 prompt_str = question
             else:
                 m = [{"role": "user", "content": question}]

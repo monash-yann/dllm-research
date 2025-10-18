@@ -406,15 +406,15 @@ class MRSampler(BaseSampler):
             GG = False
 
             # mutiplying positional weights
-            if self.positional_weights_type == 'absolute':
-                confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.absolute_positional_weights[current_step]
-            elif self.positional_weights_type == 'ratio':
-                unmasked_ratio = (x != self.mask_id).sum().item() / gen_length
-                dynamic_positional_weights = self.compute_dynamic_positional_weights(gen_length, unmasked_ratio, device=x0.device)
-                # print(f"conf shape: {confidence[:, prompt_len:].shape}, dynamic_positional_weights shape: {dynamic_positional_weights.shape}")
-                confidence[:, prompt_len:] = confidence[:, prompt_len:] * dynamic_positional_weights
-            else:
-                pass
+            # if self.positional_weights_type == 'absolute':
+            #     confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.absolute_positional_weights[current_step]
+            # elif self.positional_weights_type == 'ratio':
+            #     unmasked_ratio = (x != self.mask_id).sum().item() / gen_length
+            #     dynamic_positional_weights = self.compute_dynamic_positional_weights(gen_length, unmasked_ratio, device=x0.device)
+            #     # print(f"conf shape: {confidence[:, prompt_len:].shape}, dynamic_positional_weights shape: {dynamic_positional_weights.shape}")
+            #     confidence[:, prompt_len:] = confidence[:, prompt_len:] * dynamic_positional_weights
+            # else:
+            #     pass
 
             confidence_in_active_zones = torch.where(dynamic_accel_mask, confidence, -np.inf)
 

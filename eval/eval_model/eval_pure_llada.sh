@@ -4,6 +4,7 @@
 set -e
 
 export HF_ENDPOINT=https://hf-mirror.com
+export HF_ALLOW_CODE_EVAL=1
 
 CONDA_ENV_NAME="llada118"
 PROJECT_ROOT="/homebck/home/xiangzhong_guest/LLADA/llada_sampling_system"
@@ -14,20 +15,21 @@ MODEL_PATH="/homebck/home/xiangzhong_guest/LLADA/llada_sampling_system/models/LL
 GPU_IDS=(0 1 2)
 MASTER_PORT=8086
 
-TASKS="gsm8k"
+#TASKS="gsm8k"
+TASKS="humaneval"
 
 GPU_LIST=$(IFS=,; echo "${GPU_IDS[*]}")
 NUM_GPUS=${#GPU_IDS[@]}
 
 
 # 为了快速测试，限制评估的样本数量 (正式评估时请注释掉此行)
-N_LIMIT=100
+#N_LIMIT=100
 #LIMIT="--limit 3"
 
 # evaluation parameters
 BATCH_SIZE=1
 MC_NUM=128
-NUM_FEWSHOT=4
+#NUM_FEWSHOT=4
 GEN_LENGTH=256
 STEPS=256
 
@@ -43,7 +45,7 @@ STEPS=256
 # sampler parameters
 CFG_SCALE=0.0
 TEMPERATURE=0.0
-POSITIONAL_WEIGHTS_TYPE='ratio'
+POSITIONAL_WEIGHTS_TYPE='none'
 MAX_WEIGHT=1.0
 INITIAL_MIN_WEIGHT=0.0
 BLOCK_LENGTH=256
@@ -92,8 +94,9 @@ stdbuf -o0 conda run -n "$CONDA_ENV_NAME" --no-capture-output \
     --main_process_port $MASTER_PORT \
     -m eval.eval_model.eval_pure_llada \
       --model eval_sampler \
+      --confirm_run_unsafe_code \
       --tasks $TASKS \
-      --num_fewshot $NUM_FEWSHOT\
+      ${NUM_FEWSHOT:+--num_fewshot $NUM_FEWSHOT}\
       --batch_size $BATCH_SIZE \
       --model_args $MODEL_ARGS \
       --log_samples \

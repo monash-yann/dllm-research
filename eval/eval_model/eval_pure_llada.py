@@ -55,7 +55,7 @@ class LLaDAEvalHarness(BaseEvalHarness):
             torch_dtype=torch.bfloat16
         )
 
-        super().__init__(model_path, batch_size, mc_num, steps, gen_length, sampler=sampler)
+        super().__init__(model_path, batch_size, mc_num, steps, gen_length, sampler=sampler, **kwargs)
 
 
 if __name__ == "__main__":
