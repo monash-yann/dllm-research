@@ -2,7 +2,7 @@
 
 # 当任何命令失败时立即退出脚本
 set -e
-
+export CONDA_EXE="/root/miniconda3/bin/conda"
 export HF_ENDPOINT=https://hf-mirror.com
 export HF_ALLOW_CODE_EVAL=1
 
@@ -11,11 +11,12 @@ PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
 MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 
 # available gpus
-GPU_IDS=(0 1 2 3)
+GPU_IDS=(0 1 2)
 MASTER_PORT=8086
 
 TASKS="gsm8k"
-N_LIMIT=100
+# N_LIMIT=100
+NUM_FEWSHOT=4
 
 #TASKS="mbpp"
 #TASKS="humaneval"
@@ -33,18 +34,19 @@ CFG_SCALE=0.0
 TEMPERATURE=0.0
 MAX_EXPLORATION_STEPS=10
 #EXPLORATION_N_VALUES=(1 2 4 8)
-EXPLORATION_N_VALUES=(8 7 6 5 4 3 2 1)
+EXPLORATION_N_VALUES=(7 6 5 4)
+# EXPLORATION_N_VALUES=(6 8)
 EXPLORATION_M=2
 EXPLORATION_THRESHOLD=0.25
 ACCELERATION_PARALLEL_METHOD='fixed'
 ACCELERATION_FACTOR=1
 ACCELERATION_THRESHOLD=0.9
 ACCELERATION_LOW_THRESHOLD=0.6
-POSITIONAL_WEIGHTS_TYPE='none'
 MOPUP_GATE_RATIO=0.85
 MAX_MOPUP_STEPS=50
-MOPUP_SPEED=2
+MOPUP_SPEED=1
 
+POSITIONAL_WEIGHTS_TYPE='ratio'
 MAX_WEIGHT=1.0
 INITIAL_MIN_WEIGHT=0.0
 
@@ -57,7 +59,7 @@ MODEL_NAME=$(basename "$MODEL_PATH")
 for EXPLORATION_N in "${EXPLORATION_N_VALUES[@]}"
 do
   echo "========================== evaluating N=${EXPLORATION_N} =========================="
-  OUTPUT_DIR="eval/outputs/${MODEL_NAME}_APM${ACCELERATION_PARALLEL_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_V6_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/N${EXPLORATION_N}/SL${STEPS}"
+  OUTPUT_DIR="eval/outputs/${MODEL_NAME}_APM${ACCELERATION_PARALLEL_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_mp${MOPUP_SPEED}_V6MD0.4_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${STEPS}/N${EXPLORATION_N}"
   #OUTPUT_DIR="eval/outputs/${MODEL_NAME}_BIG_TEST/${TASKS}"
   rm -rf $OUTPUT_DIR
   mkdir -p $OUTPUT_DIR
@@ -93,6 +95,7 @@ do
   echo "Using GPUs: $GPU_LIST (Total: $NUM_GPUS)"
   echo "Model: $MODEL_PATH"
   echo "Tasks: $TASKS"
+  echo "Few-Shot: $NUM_FEWSHOT"
   echo "Model Args: $MODEL_ARGS"
   echo "Output Dir: $OUTPUT_DIR"
   echo "================================================="
@@ -102,7 +105,7 @@ do
 
   # 使用 accelerate launch 启动您的评估脚本
   #    --ddp_backend nccl \: ddp mode set by running accelerate config instead of argument
-  stdbuf -o0 conda run -n "$CONDA_ENV_NAME" --no-capture-output \
+  stdbuf -o0 "$CONDA_EXE" run -n "$CONDA_ENV_NAME" --no-capture-output \
     CUDA_VISIBLE_DEVICES=$GPU_LIST \
     accelerate launch \
       --num_processes $NUM_GPUS \
@@ -121,3 +124,4 @@ do
 done
 
 echo "All evaluations are complete."
+/usr/bin/shutdown

@@ -37,6 +37,7 @@ class LLaDAEvalHarness(BaseEvalHarness):
         mc_num=128,
         steps=256,
         gen_length=256,
+        block_length=256,
         device="cuda",
         **kwargs,
     ):
@@ -55,7 +56,7 @@ class LLaDAEvalHarness(BaseEvalHarness):
             torch_dtype=torch.bfloat16
         )
 
-        super().__init__(model_path, batch_size, mc_num, steps, gen_length, sampler=sampler, **kwargs)
+        super().__init__(model_path, batch_size, mc_num, steps, gen_length, block_length, sampler=sampler, **kwargs)
 
 
 if __name__ == "__main__":

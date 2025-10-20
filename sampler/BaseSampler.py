@@ -197,6 +197,7 @@ class BaseSampler:
         prompt,
         gen_length=256,
         max_steps=256,
+        block_length=256,
         enable_metrics=True,
     ) -> GenerateOutput:
         pass

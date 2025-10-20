@@ -560,19 +560,16 @@ class MRSampler(BaseSampler):
         prompt,
         gen_length=256,
         max_steps=256,
+        block_length=256,
         enable_metrics=True,
     ) -> GenerateOutput:
         """
         实现“多区域并行置信度驱动解码”思路的主函数。
         """
         # 初始化
-        start_time = time.perf_counter()
 
         assert gen_length <= self.model_max_genlength, f"gen_length must <= model_max_genlength({self.model_max_genlength})"
         assert max_steps <= self.model_max_steps, f"steps must <= model_max_steps({self.model_max_steps})"
-        x = torch.full((1, prompt.shape[1] + gen_length), self.mask_id, dtype=torch.long).to(self.model.device)
-        x[:, :prompt.shape[1]] = prompt.clone()
-        prompt_index = (x != self.mask_id)
 
         # initalize positional weights
         if self.positional_weights_type == 'absolute':
@@ -584,6 +581,17 @@ class MRSampler(BaseSampler):
         else:
             pass
 
+
+        x = torch.full((1, prompt.shape[1] + gen_length), self.mask_id, dtype=torch.long).to(self.model.device)
+        x[:, :prompt.shape[1]] = prompt.clone()
+        prompt_index = (x != self.mask_id)
+
+        assert gen_length % block_length == 0
+        num_blocks = gen_length // block_length
+
+        assert max_steps % num_blocks == 0
+        block_steps = max_steps // num_blocks
+
         # 主循环 (探索与加速)
         outputs = []
         confidences = []
@@ -593,77 +601,79 @@ class MRSampler(BaseSampler):
         accumulated_steps = 0
 
         # print(f"Starting Inference ============================= {x.shape}")
+        start_time = time.perf_counter()
 
-        for EA_idx in range(max_steps - self.max_mopup_steps):
-            # 检查是否大部分已经解码完成
-            num_masked = (x == self.mask_id).sum().item()
-            masked_ratio = 1.0 * num_masked / gen_length
-            if masked_ratio < (1 - self.mopup_gate_ratio):
-                # print(f"已解码{(1 - masked_ratio) * 100}% (>{mopup_gate_ratio * 100}%), 退出E-A阶段")
-                break
+        for num_block in range(num_blocks):
+            # for semi-ar
+            for EA_idx in range(max_steps - self.max_mopup_steps):
+                # 检查是否大部分已经解码完成
+                num_masked = (x == self.mask_id).sum().item()
+                masked_ratio = 1.0 * num_masked / gen_length
+                if masked_ratio < (1 - self.mopup_gate_ratio):
+                    # print(f"已解码{(1 - masked_ratio) * 100}% (>{mopup_gate_ratio * 100}%), 退出E-A阶段")
+                    break
 
-            # ① 探索阶段
-            x, intervals, exploration_steps, exploration_outputs, exploration_confidences, exploration_transfer_idxs, history_intervals \
-                = self.exploration_phase(
-                x,
-                prompt_index,
-                exp_steps=min(self.max_exploration_steps, max_steps - accumulated_steps),
-                EA_idx=EA_idx,
-                current_step=accumulated_steps
-            )
-
-            # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Exploration")
-            outputs.extend(exploration_outputs)
-            confidences.extend(exploration_confidences)
-            transfer_idxs.extend(exploration_transfer_idxs)
-            phase_states.append(
-                {'phase': 'exploration', 'range': (accumulated_steps, accumulated_steps + exploration_steps)})
-            exploration_intervals.append({'inceptive_step': accumulated_steps, 'history_intervals': history_intervals})
-            # print(f"exploration phase ends, use steps: {exploration_steps}, TPS: {(num_masked - num_masked_exploration) / (exploration_steps)}")
-            # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Exploration")
-            accumulated_steps += exploration_steps
-
-            # ② 加速阶段
-            x, acceleration_steps, outputs_acceleration, confidences_acceleration, transfer_idxs_acceleration \
-                = self.acceleration_phase(
+                # ① 探索阶段
+                x, intervals, exploration_steps, exploration_outputs, exploration_confidences, exploration_transfer_idxs, history_intervals \
+                    = self.exploration_phase(
                     x,
                     prompt_index,
-                    intervals,
-                    current_step=accumulated_steps,
-            )
+                    exp_steps=min(self.max_exploration_steps, max_steps - accumulated_steps),
+                    EA_idx=EA_idx,
+                    current_step=accumulated_steps
+                )
 
-            # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Acceleration")
-            outputs.extend(outputs_acceleration)
-            confidences.extend(confidences_acceleration)
-            transfer_idxs.extend(transfer_idxs_acceleration)
-            phase_states.append(
-                {'phase': 'acceleration', 'range': (accumulated_steps, accumulated_steps + acceleration_steps)})
-            accumulated_steps += acceleration_steps
-            # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Acceleration")
-            # TODO: 根据当前自信度(第1和第2答案的logits均值)，决定进入收尾还是直接commit答案
+                # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Exploration")
+                outputs.extend(exploration_outputs)
+                confidences.extend(exploration_confidences)
+                transfer_idxs.extend(exploration_transfer_idxs)
+                phase_states.append(
+                    {'phase': 'exploration', 'range': (accumulated_steps, accumulated_steps + exploration_steps)})
+                exploration_intervals.append({'inceptive_step': accumulated_steps, 'history_intervals': history_intervals})
+                # print(f"exploration phase ends, use steps: {exploration_steps}, TPS: {(num_masked - num_masked_exploration) / (exploration_steps)}")
+                # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Exploration")
+                accumulated_steps += exploration_steps
 
-        # ③ 收尾阶段
-        # print("\n--- 进入收尾阶段 ---")
-        x, mopup_steps, outputs_mopup, confidences_mopup, transfer_idxs_mopup \
-            = self.mop_up_phase(x, prompt_index)
-        # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Mopup")
-        if mopup_steps > 0:
-            outputs.extend(outputs_mopup)
-            confidences.extend(confidences_mopup)
-            transfer_idxs.extend(transfer_idxs_mopup)
-            # print(f"mop_up phase ends, use steps: {mopup_steps}, TPS: {(num_masked_acceleration - num_masked_mopup) / (mopup_steps)}")
-            phase_states.append({'phase': 'mopup', 'range': (accumulated_steps, accumulated_steps + mopup_steps)})
-        else:
-            pass
-            # print(f"No Need for mop_up phase")
-        # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Mopup")
+                # ② 加速阶段
+                x, acceleration_steps, outputs_acceleration, confidences_acceleration, transfer_idxs_acceleration \
+                    = self.acceleration_phase(
+                        x,
+                        prompt_index,
+                        intervals,
+                        current_step=accumulated_steps,
+                )
 
-        accumulated_steps += mopup_steps
-        total_steps = accumulated_steps
+                # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Acceleration")
+                outputs.extend(outputs_acceleration)
+                confidences.extend(confidences_acceleration)
+                transfer_idxs.extend(transfer_idxs_acceleration)
+                phase_states.append(
+                    {'phase': 'acceleration', 'range': (accumulated_steps, accumulated_steps + acceleration_steps)})
+                accumulated_steps += acceleration_steps
+                # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Acceleration")
+                # TODO: 根据当前自信度(第1和第2答案的logits均值)，决定进入收尾还是直接commit答案
+            # ③ 收尾阶段
+            # print("\n--- 进入收尾阶段 ---")
+            x, mopup_steps, outputs_mopup, confidences_mopup, transfer_idxs_mopup \
+                = self.mop_up_phase(x, prompt_index)
+            # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Mopup")
+            if mopup_steps > 0:
+                outputs.extend(outputs_mopup)
+                confidences.extend(confidences_mopup)
+                transfer_idxs.extend(transfer_idxs_mopup)
+                # print(f"mop_up phase ends, use steps: {mopup_steps}, TPS: {(num_masked_acceleration - num_masked_mopup) / (mopup_steps)}")
+                phase_states.append({'phase': 'mopup', 'range': (accumulated_steps, accumulated_steps + mopup_steps)})
+            else:
+                pass
+                # print(f"No Need for mop_up phase")
+            # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Mopup")
+
+            accumulated_steps += mopup_steps
 
         # compute metrics
         end_time = time.perf_counter()
         duration = end_time - start_time
+        total_steps = accumulated_steps
 
         metrics = GenerationMetrics(
             use_seconds=duration,

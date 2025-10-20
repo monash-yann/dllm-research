@@ -45,6 +45,7 @@ class BaseEvalHarness(LM):
         mc_num=128,
         steps=256,
         gen_length=256,
+        block_length=256,
         sampler: BaseSampler = None,
         device="cuda",
         **kwargs,
@@ -85,6 +86,7 @@ class BaseEvalHarness(LM):
         self.sampling_eps = 0.
         self.gen_length = gen_length
         self.steps = steps
+        self.block_length = block_length
 
         self.overall_metrics: List[GenerationMetrics] = []
         self.output_dir = kwargs['output_dir']
@@ -263,7 +265,7 @@ class BaseEvalHarness(LM):
             stop_tokens.append(tokenizer.eos_token)
 
             # print('#' * 20 + f"the prompt is: {elem['question_text']}" + '#' * 20)
-            OUT: GenerateOutput = self.sampler.generate(prompt, gen_length=self.gen_length, max_steps=self.steps)
+            OUT: GenerateOutput = self.sampler.generate(prompt, gen_length=self.gen_length, max_steps=self.steps, block_length=self.block_length)
             generated_answer = OUT.out
             generated_answer = tokenizer.decode(generated_answer[0][prompt.shape[1]:], skip_special_tokens=False)
             # print('#' * 20 + f"generated_answer: {generated_answer}" + '#' * 20)
