@@ -8,7 +8,7 @@ import numpy as np
 import torch.nn.functional as F
 
 from transformers import AutoTokenizer, AutoModel, PreTrainedModel, PreTrainedTokenizer
-
+from datasets import load_dataset
 
 from sampler.BaseSampler import BaseSampler, SamplerConfig, GenerationMetrics, GenerateOutput
 from sampler.utils import add_gumbel_noise, get_num_transfer_tokens, set_seed
@@ -275,7 +275,7 @@ class MRSampler(BaseSampler):
             # delta = expected_deltas[i]
             interval_width = end - start + 1
             # 计算边缘区域的宽度，至少为1
-            edge_width = max(3, int(interval_width * 0.3))
+            edge_width = max(3, int(interval_width * 0.4))
 
             left_density = org_confidence[:, start: start + edge_width].nan_to_num(neginf=0).mean().item()
             left_delta = int(left_density * edge_width)
@@ -406,15 +406,15 @@ class MRSampler(BaseSampler):
             GG = False
 
             # mutiplying positional weights
-            # if self.positional_weights_type == 'absolute':
-            #     confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.absolute_positional_weights[current_step]
-            # elif self.positional_weights_type == 'ratio':
-            #     unmasked_ratio = (x != self.mask_id).sum().item() / gen_length
-            #     dynamic_positional_weights = self.compute_dynamic_positional_weights(gen_length, unmasked_ratio, device=x0.device)
-            #     # print(f"conf shape: {confidence[:, prompt_len:].shape}, dynamic_positional_weights shape: {dynamic_positional_weights.shape}")
-            #     confidence[:, prompt_len:] = confidence[:, prompt_len:] * dynamic_positional_weights
-            # else:
-            #     pass
+            if self.positional_weights_type == 'absolute':
+                confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.absolute_positional_weights[current_step]
+            elif self.positional_weights_type == 'ratio':
+                unmasked_ratio = (x != self.mask_id).sum().item() / gen_length
+                dynamic_positional_weights = self.compute_dynamic_positional_weights(gen_length, unmasked_ratio, device=x0.device)
+                # print(f"conf shape: {confidence[:, prompt_len:].shape}, dynamic_positional_weights shape: {dynamic_positional_weights.shape}")
+                confidence[:, prompt_len:] = confidence[:, prompt_len:] * dynamic_positional_weights
+            else:
+                pass
 
             confidence_in_active_zones = torch.where(dynamic_accel_mask, confidence, -np.inf)
 
@@ -459,35 +459,30 @@ class MRSampler(BaseSampler):
                 elif self.acceleration_parallel_method == 'margin':
                     pass
                 n_para_updated = para_transfer_index.sum().item()
-                # 更新策略2[保底]: 若区间内元素不达解码阈值但仍高于最低阈值(可以直接是探索区间的阈值), 则进行top-k保守(conservative)更新
-                n_cons_updated = 0
-                cons_transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-                cons_min_k = max(1, self.exp_N // n_active_intervals)
-                if n_para_updated < cons_min_k:
-                    confidence_for_topk = confidence_in_curr_zone.clone()
-                    # 排除已经为True的位置
-                    if n_para_updated > 0:
-                        confidence_for_topk[para_transfer_index] = -np.inf
-                    _, topk_index = torch.topk(confidence_for_topk, dim=1, k=cons_min_k - n_para_updated)
-                    # 最低置信度检测
-                    cons_mask = confidence_for_topk.gather(dim=1, index=topk_index) > self.acceleration_low_threshold
-                    cons_index = topk_index[cons_mask].unsqueeze(0)  # topk_index[topk_mask]会将结果自动降维
-                    n_cons_updated = cons_mask.sum().item()
-                    # 增加填充位置
-                    cons_transfer_index.scatter_(dim=1, index=cons_index, value=True)
+                # 更新策略2[保底，暂时取消]: 若区间内元素不达解码阈值但仍高于最低阈值(可以直接是探索区间的阈值), 则进行top-k保守(conservative)更新
+                # n_cons_updated = 0
+                # cons_transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+                # cons_min_k = max(1, self.exp_N // n_active_intervals)
+                # if n_para_updated < cons_min_k:
+                #     confidence_for_topk = confidence_in_curr_zone.clone()
+                #     # 排除已经为True的位置
+                #     if n_para_updated > 0:
+                #         confidence_for_topk[para_transfer_index] = -np.inf
+                #     _, topk_index = torch.topk(confidence_for_topk, dim=1, k=cons_min_k - n_para_updated)
+                #     # 最低置信度检测
+                #     cons_mask = confidence_for_topk.gather(dim=1, index=topk_index) > self.acceleration_low_threshold
+                #     cons_index = topk_index[cons_mask].unsqueeze(0)  # topk_index[topk_mask]会将结果自动降维
+                #     n_cons_updated = cons_mask.sum().item()
+                #     # 增加填充位置
+                #     cons_transfer_index.scatter_(dim=1, index=cons_index, value=True)
                 # 为transfer_index增加当前区间的更新信息
                 transfer_index |= para_transfer_index
-                transfer_index |= cons_transfer_index
                 total_n_para_updated += n_para_updated
-                total_n_cons_updated += n_cons_updated
+                # transfer_index |= cons_transfer_index
+                # total_n_updated += n_cons_updated
 
-            print(f"curr_step {current_step} [Acceleration]: "
-                  f"total_n_updated({total_n_para_updated + total_n_cons_updated}) = total_n_para_updated({total_n_para_updated}) + total_n_cons_updated({total_n_cons_updated})")
-
-            # 单轮更新数低于设置阈值，提前退出加速阶段
-            if total_n_para_updated + total_n_cons_updated <= self.exp_N:
-                GG = True
-            if not GG:
+            total_n_updated = total_n_para_updated + total_n_cons_updated
+            if total_n_updated > 0:
                 x[transfer_index] = x0[transfer_index]
                 # print(f"transfered positions: {torch.where(transfer_index)[-1]}")
                 # TODO: 3.根据区间边缘的密度，在一定程度上再动态推进区间（惯性）
@@ -500,12 +495,16 @@ class MRSampler(BaseSampler):
                             state['status'] = 'completed'
                             # print(f"区间 {state['coords']} 加速完成!")
 
+            print(f"curr_step {current_step} [Acceleration]: "
+                  f"total_n_updated({total_n_updated}) = total_n_para_updated({total_n_para_updated})) + total_n_cons_updated({total_n_cons_updated})");
+
             # dev: 更新历史记录
             outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
             confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
             transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
 
-            if GG:
+            # 单轮更新数低于设置阈值，提前退出加速阶段
+            if total_n_updated < self.exp_N:
                 break
 
         return x, steps_used, outputs, confidences, transfer_idxs
@@ -687,17 +686,17 @@ class MRSampler(BaseSampler):
 
 def main():
     set_seed(1234)
-    device = 'cuda:2'
+    device = 'cuda:0'
     model_path = "../models/LLaDA-8B-Instruct"
 
     # 4-shot prompt
-    few_shot_filename = "../prompts/gsm8k_shot.txt"
-    with open(few_shot_filename, "r", encoding="utf-8") as f:
-        prompts= f.readlines()[0:3]
+    # few_shot_filename = "../prompts/gsm8k_shot.txt"
+    # with open(few_shot_filename, "r", encoding="utf-8") as f:
+    #     prompts= f.readlines()[0:3]
 
     # base prompt
-    # gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    # prompts = gsm8k_dataset['test']['question'][2:3]
+    gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
+    prompts = gsm8k_dataset['test']['question'][0:3]
     # # prompts = gsm8k_dataset['test']['question'][39:40]
     #
     # prompts = [
@@ -718,7 +717,7 @@ def main():
         acceleration_low_threshold=0.6,
         acceleration_factor=1,
         max_mopup_steps=10,
-        mopup_gate_ratio=0.9,
+        mopup_gate_ratio=0.85,
         mopup_speed=2,
         positional_weights_type='none',
         max_weight=1.0,

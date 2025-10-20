@@ -2,27 +2,29 @@
 
 # 当任何命令失败时立即退出脚本
 set -e
+export CONDA_EXE="/root/miniconda3/bin/conda"
 
 export HF_ENDPOINT=https://hf-mirror.com
 export HF_ALLOW_CODE_EVAL=1
 
-CONDA_ENV_NAME="llada118"
-PROJECT_ROOT="/homebck/home/xiangzhong_guest/LLADA/llada_sampling_system"
-
+CONDA_ENV_NAME="dico"
+PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
 MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 
 # available gpus
 GPU_IDS=(0 1 2)
 MASTER_PORT=8086
 
-#TASKS="gsm8k"
-TASKS="humaneval"
+# gsm8k NUM_FEWSHOT should be 4
+TASKS="gsm8k"
+NUM_FEWSHOT=4
 
-#NUM_FEWSHOT=4
+# humaneval don't have fewshot
+#TASKS="humaneval"
+
 
 # 为了快速测试，限制评估的样本数量 (正式评估时请注释掉此行)
-#N_LIMIT=100
-#LIMIT="--limit 3"
+#N_LIMIT=2
 
 GPU_LIST=$(IFS=,; echo "${GPU_IDS[*]}")
 NUM_GPUS=${#GPU_IDS[@]}
@@ -32,7 +34,7 @@ NUM_GPUS=${#GPU_IDS[@]}
 BATCH_SIZE=1
 MC_NUM=128
 
-SL_VALUES=(256 512 1024)
+SL_VALUES=(256 512)
 
 for SL in "${SL_VALUES[@]}"
 do
@@ -76,6 +78,7 @@ do
   echo "Using GPUs: $GPU_LIST (Total: $NUM_GPUS)"
   echo "Model: $MODEL_PATH"
   echo "Tasks: $TASKS"
+  echo "Few-Shot: $NUM_FEWSHOT"
   echo "Model Args: $MODEL_ARGS"
   echo "Output Dir: $OUTPUT_DIR"
   echo "================================================="
@@ -85,7 +88,7 @@ do
 
   # 使用 accelerate launch 启动您的评估脚本
   #    --ddp_backend nccl \: ddp mode set by running accelerate config instead of argument
-  stdbuf -o0 conda run -n "$CONDA_ENV_NAME" --no-capture-output \
+  stdbuf -o0 "$CONDA_EXE" run -n "$CONDA_ENV_NAME" --no-capture-output \
     CUDA_VISIBLE_DEVICES=$GPU_LIST \
     accelerate launch \
       --num_processes $NUM_GPUS \
@@ -103,4 +106,4 @@ do
         > "${OUTPUT_DIR}/log.txt" 2>&1
 done
 # only in autodl
-#/usr/bin/shutdown
+/usr/bin/shutdown

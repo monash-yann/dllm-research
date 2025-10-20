@@ -27,7 +27,6 @@ from sampler.BaseSampler import BaseSampler, GenerateOutput, GenerationMetrics
 
 
 
-
 def set_seed(seed):
     torch.manual_seed(seed)
     random.seed(seed)
@@ -72,6 +71,10 @@ class BaseEvalHarness(LM):
             self.sampler = self.accelerator.prepare(sampler)
             self._rank = self.accelerator.local_process_index
             self._world_size = self.accelerator.num_processes
+        else:
+            self.sampler = sampler
+            self._rank = 0
+            self._world_size = 1
         self.sampler.model = self.sampler.model.to(device)
         self.sampler.model.eval()
         self.device = self.sampler.model.device  # 从最终的模型获取最准确的设备信息
@@ -267,7 +270,7 @@ class BaseEvalHarness(LM):
             for stop_seq in stop_tokens:
                 if stop_seq in generated_answer:
                     generated_answer = generated_answer.split(stop_seq)[0]
-            if on_main_process:
+            if on_main_process or self.accelerator is None:
                 print('#' * 20 + f"generated_answer after spliting: {generated_answer}" + '#' * 20)
 
             # remove special tokens
@@ -294,10 +297,11 @@ class BaseEvalHarness(LM):
         if self.accelerator is not None:
             print(f"[Info] Collecting metrics......")
             overall_metrics = self.accelerator.gather_for_metrics(self.overall_metrics)
-
             if self._rank != 0:
                 return
             print(f"[Info] Gathered {len(overall_metrics)} metrics in total")
+        else:
+            overall_metrics = self.overall_metrics
 
         if not overall_metrics:
             print("No overall metrics were collected. Skipping report generation.")

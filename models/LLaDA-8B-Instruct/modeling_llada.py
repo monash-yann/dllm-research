@@ -758,17 +758,7 @@ class LLaDABlock(nn.Module):
 
         # Get the attention scores.
         # shape: (B, nh, T, hs)
-        # att = self._scaled_dot_product_attention(
-        #     q,
-        #     k,
-        #     v,
-        #     attn_mask=None,
-        #     dropout_p=0.0 if not self.training else self.config.attention_dropout,
-        #     is_causal=False,
-        # )
-
-        # 调用手动实现的dot_product以获取attention_weights
-        att = self._manually_scaled_dot_product_attention(
+        att = self._scaled_dot_product_attention(
             q,
             k,
             v,
@@ -776,6 +766,16 @@ class LLaDABlock(nn.Module):
             dropout_p=0.0 if not self.training else self.config.attention_dropout,
             is_causal=False,
         )
+
+        # 调用手动实现的dot_product以获取attention_weights
+        # att = self._manually_scaled_dot_product_attention(
+        #     q,
+        #     k,
+        #     v,
+        #     attn_mask=None,
+        #     dropout_p=0.0 if not self.training else self.config.attention_dropout,
+        #     is_causal=False,
+        # )
 
         # Re-assemble all head outputs side-by-side.
         att = att.transpose(1, 2).contiguous().view(B, T, C)

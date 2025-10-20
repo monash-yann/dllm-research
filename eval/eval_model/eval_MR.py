@@ -45,10 +45,11 @@ class MRSamplerEvalHarness(BaseEvalHarness):
 
         sampler = MRSampler.from_path(
             model_path,
-            config=sampler_config
+            config=sampler_config,
+            torch_dtype=torch.bfloat16
         )
 
-        super().__init__(model_path, batch_size, mc_num, steps, gen_length, sampler, **kwargs)
+        super().__init__(model_path, batch_size, mc_num, steps, gen_length, sampler=sampler, **kwargs)
 
 
 if __name__ == "__main__":
