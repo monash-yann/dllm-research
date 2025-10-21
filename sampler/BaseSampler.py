@@ -28,7 +28,7 @@ class SamplerConfig:
     model_max_genlength: int = 2048
     model_max_steps: int = 2048
     # Positional weight config
-    positional_weights_type: Literal['absolute', 'ratio', 'none'] = 'none'
+    positional_weights_type: Literal['absolute', 'ratio', 'static', 'none'] = 'none'
     max_weight: float = 1.0
     initial_min_weight: float = 0.1
 
@@ -73,6 +73,27 @@ class BaseSampler:
             print(f"{field.name}: {getattr(config, field.name)}")
             setattr(self, field.name, getattr(config, field.name))
 
+    def precompute_static_positional_weights(
+        self,
+        gen_length: int,
+        device: torch.device = 'cuda',
+        dtype: torch.dtype = torch.float32
+    ) -> torch.Tensor:
+        """
+            precompute a weight matrix shaped (gen_length,), static weights for all steps
+        """
+        assert gen_length > 0, "gen_length must > 0"
+        max_weight = self.max_weight
+        min_weight = self.initial_min_weight
+
+        if gen_length == 1:
+            return torch.full((gen_length,), max_weight, device=device, dtype=dtype)
+        positions = torch.arange(gen_length, device=device, dtype=dtype)  # (gen_length,)
+        # compute lambda_decay
+        lambda_decay = -torch.log(torch.tensor(min_weight)) / (gen_length - 1)  # scalar
+        # compute step_positional_weights
+        positional_weights = torch.exp(-lambda_decay * positions)  # (max_steps, gen_length)
+        return positional_weights
 
     def precompute_absolute_positional_weights(
         self,
@@ -83,7 +104,7 @@ class BaseSampler:
     ) -> torch.Tensor:
         """
             precompute a weight matrix shaped (max_steps, gen_length)
-            每一行代表一个step的权重曲线，曲线随step增加而变得平缓。
+            the min_weight increases as step advances
         """
         assert gen_length > 0 and max_steps > 0, "gen_length and max_steps must > 0"
         max_weight = self.max_weight

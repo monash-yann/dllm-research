@@ -21,6 +21,7 @@ from dataclasses import dataclass, fields, asdict, field
 class PureLLaDASamplerConfig(SamplerConfig):
     remasking: Literal["random", "low_confidence"] = "low_confidence"
     decoding_method: Literal["topk", "factor"] = "topk"
+    k:int = -1
 
 
 class PureLLaDASampler(BaseSampler):
@@ -61,6 +62,10 @@ class PureLLaDASampler(BaseSampler):
             )
         elif self.positional_weights_type == 'ratio':
             pass
+        elif self.positional_weights_type == 'static':
+            self.static_positional_weights = self.precompute_static_positional_weights(
+                gen_length=gen_length, device=self.model.device, dtype=torch.float32
+            )
         else:
             pass
 
@@ -72,6 +77,7 @@ class PureLLaDASampler(BaseSampler):
         exploration_intervals = []  # [{'inceptive_step': 0, 'history_intervals': [[(start, end), ...], [(start, end), ...], ...]}]
         accumulated_steps = 0
         prompt_len = prompt.shape[1]
+
         start_time = time.perf_counter()
 
         x = torch.full((1, prompt_len + gen_length), self.mask_id, dtype=torch.long).to(self.model.device)
@@ -84,11 +90,11 @@ class PureLLaDASampler(BaseSampler):
         assert max_steps % num_blocks == 0
         block_steps = max_steps // num_blocks
 
-        print(f"decoding method: {self.decoding_method}")
+        print(f"decoding method: {self.decoding_method}, user_k: {self.k}.")
         for num_block in range(num_blocks):
-            block_mask_index = (x[:, prompt_len + num_block * block_length: prompt_len + (
-                    num_block + 1) * block_length:] == self.mask_id)
-            # num_transfer_tokens = get_num_transfer_tokens(block_mask_index, block_steps)  # 得到要demask的token数
+                    # block_mask_index = (x[:, prompt_len + num_block * block_length: prompt_len + (
+                    #     num_block + 1) * block_length:] == self.mask_id)
+                    # num_transfer_tokens = get_num_transfer_tokens(block_mask_index, block_steps)  # 得到要demask的token数
 
             for i in range(block_steps):
                 mask_index = (x == self.mask_id)
@@ -117,12 +123,13 @@ class PureLLaDASampler(BaseSampler):
                 else:
                     raise NotImplementedError(self.remasking)
 
-                x0_p[:, prompt_len + (num_block + 1) * block_length:] = -np.inf
+                x0_p[:, prompt_len + (num_block + 1) * block_length:] = -np.inf #semi-ar
 
                 x0 = torch.where(mask_index, x0, x)
 
                 confidence = torch.where(mask_index, x0_p, -np.inf)
-                # applying positional weights
+
+                # applying positional weights dd
                 if self.positional_weights_type == 'absolute':
                     confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.absolute_positional_weights[
                         num_block * block_steps + i]
@@ -131,6 +138,8 @@ class PureLLaDASampler(BaseSampler):
                     dynamic_positional_weights = self.compute_dynamic_positional_weights(gen_length, unmasked_ratio,
                                                                                          device=x0.device)
                     confidence[:, prompt_len:] = confidence[:, prompt_len:] * dynamic_positional_weights
+                elif self.positional_weights_type == 'static':
+                    confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.static_positional_weights
                 else:
                     pass
 
@@ -160,37 +169,42 @@ class PureLLaDASampler(BaseSampler):
                         _, select_index = torch.topk(conf_b, k=1)
                         transfer_index[b, select_index] = True
                     elif self.decoding_method == 'topk':  # default topk
-                        assert block_length % block_steps == 0
-                        k = block_length // block_steps
+                        if self.k:
+                            k = self.k
+                        else:
+                            assert block_length % block_steps == 0
+                            k = block_length // block_steps
                         # print(f"in block {num_block}, step {i}, k={k}.")
                         for b in range(confidence.shape[0]):
-                            _, select_index = torch.topk(confidence[b], k=k)
+                            n_effective = (confidence > 0).sum().item()
+                            _, select_index = torch.topk(confidence[b], k=min(k, n_effective))
                             transfer_index[b, select_index] = True
+                            # print(f"select_index: {select_index.cpu().numpy()}.")
                     else:
                         pass
 
                 x[transfer_index] = x0[transfer_index]
-                print(
-                    f"step: {num_block * block_length + i}, block: {num_block}, i: {i}, n_transferred: {transfer_index.sum().item()}.")
+                print(f"step: {accumulated_steps}, block: {num_block}, i: {i}, n_transferred: {transfer_index.sum().item()}.")
 
                 # collecting states
                 outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
                 confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
                 transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
 
-                if (x == self.mask_id).sum().item() == 0:
+                if (x[:, prompt_len + num_block * block_length: prompt_len + (num_block+1) * block_length] == self.mask_id).sum().item() == 0:
                     print(f"block {num_block} is decoded over in step {i}.")
                     break
 
         # compute metrics
+        total_steps = accumulated_steps
+
         end_time = time.perf_counter()
         duration = end_time - start_time
 
-        total_steps = accumulated_steps
         print(f"total steps: {total_steps}.")
         metrics = GenerationMetrics(
             use_seconds=duration,
-            use_steps=max_steps,
+            use_steps=total_steps,
             n_gen_tokens=gen_length,
             tokens_per_second=(gen_length / duration) if duration > 0 else 0,
             step_reduction_ratio=max_steps / accumulated_steps
@@ -234,15 +248,15 @@ def main():
     config = PureLLaDASamplerConfig(
         cfg_scale=0.0,
         temperature=0.0,
-        positional_weights_type='ratio',
+        positional_weights_type='static',
         max_weight=1.0,
         initial_min_weight=0.1,
-        block_length=256,
         remasking="low_confidence",
         decoding_method="topk",
+        k=2
     )
 
-    max_gen_steps = 64
+    max_gen_steps = 128
     block_length = 64
     sampler = PureLLaDASampler.from_path(
         model_path=model_path,

@@ -82,9 +82,10 @@ class MRSampler(BaseSampler):
             self,
             x: Tensor,
             prompt_index: Tensor,
-            exp_steps: int,
-            EA_idx: int = 0,
-            current_step: int = 0
+            block_mask: Tensor = None,
+            exp_steps: int = 0,
+            current_step: int = -1,
+            EA_idx: int = 0
     ):
         """
         探索阶段：寻找多个高置信度区间
@@ -112,10 +113,12 @@ class MRSampler(BaseSampler):
             steps_used += 1
             GG = False
 
-            # 动态N
-            unmasked_ratio = (x[:, prompt_len:] != self.mask_id).sum().item() / gen_length
+            # dynamic N
+            unmasked_ratio = (x[:, self.block_start: self.block_end] != self.mask_id).sum().item() / self.block_length
             # select_N = round((1 - unmasked_ratio) * (self.exploration_N - 1) + 1)
             select_N = max(1, round(self.exploration_N * (np.cos(np.pi/2 * unmasked_ratio))))
+
+            confidence[~block_mask] = -np.inf
 
             # mutiplying positional weights
             if self.positional_weights_type == 'absolute':
@@ -123,6 +126,8 @@ class MRSampler(BaseSampler):
             elif self.positional_weights_type == 'ratio':
                 dynamic_positional_weights = self.compute_dynamic_positional_weights(gen_length, unmasked_ratio, device=x0.device)
                 confidence[:, prompt_len:] = confidence[:, prompt_len:] * dynamic_positional_weights
+            elif self.positional_weights_type == 'static':
+                confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.static_positional_weights[current_step]
             else:
                 pass
 
@@ -131,15 +136,13 @@ class MRSampler(BaseSampler):
             conf_temp = confidence.clone()
             invalid_mask = (x != self.mask_id)
             # 在前几个探索阶段(EA_idx < 2)，禁止在前半段输出EOT符
-            if EA_idx < 2:
-                mid_pred_point = prompt_len + (x.shape[1] - prompt_len) // 2
-                invalid_mask |= ((torch.arange(x0.shape[1], device=x0.device) < mid_pred_point).unsqueeze(0)) & ((x0 == self.eot_id) | (x0 == self.endoftext_id))
+            # if EA_idx < 2:
+            #     mid_pred_point = prompt_len + (x.shape[1] - prompt_len) // 2
+            #     invalid_mask |= ((torch.arange(x0.shape[1], device=x0.device) < mid_pred_point).unsqueeze(0)) & ((x0 == self.eot_id) | (x0 == self.endoftext_id))
             conf_temp[invalid_mask] = -np.inf
             select_N = min((~invalid_mask).sum().item(), select_N)    # mask且结果不是在前半段的EOT的位置数量
             if select_N == 0:
                 GG = True
-
-            print(f"current select_N = {select_N} (unmasked_ratio: {unmasked_ratio:.2f})")
 
             if not GG:
                 # soft-NMS式选seed点
@@ -225,7 +228,7 @@ class MRSampler(BaseSampler):
                 x[transfer_index] = x0[transfer_index]
                 # x.scatter_(dim=1, src=x0, index=seed_indices) 天坑！！！ scatter方法的意思是从src中顺序地选择赋入x的index位置处。index指定的是x中要被赋值的位置而不是在src中要被选择用于赋值的位置。
 
-                print(f"curr_step {current_step} [Exploration] exp_step {exp_step + 1}: found intervals {merged_intervals}")
+                print(f"curr_step {current_step} [Exploration] (unmasked_ratio: {unmasked_ratio:.2f}) exp_step {exp_step + 1}: select_N = {select_N}, found intervals {merged_intervals}")
 
                 # 4. 历史区间更新
                 advance_threshold = 0.1
@@ -363,8 +366,9 @@ class MRSampler(BaseSampler):
             self,
             x: Tensor,
             prompt_index: Tensor,
-            intervals: List[tuple[int, int]],
-            current_step: int
+            block_mask: Tensor = None,
+            intervals: List[tuple[int, int]] = None,
+            current_step: int = -1
     ):
         """
         自适应加速阶段: 对探索阶段中形成的可行区间进行高速解码，直至不符合某种下限条件
@@ -405,16 +409,20 @@ class MRSampler(BaseSampler):
             steps_used += 1
             GG = False
 
+            # semi support
+            # confidence[~block_mask] = -np.inf
+            confidence[:, 0: self.block_start] = confidence[:, self.block_end:] = -np.inf
+
             # mutiplying positional weights
-            if self.positional_weights_type == 'absolute':
-                confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.absolute_positional_weights[current_step]
-            elif self.positional_weights_type == 'ratio':
-                unmasked_ratio = (x != self.mask_id).sum().item() / gen_length
-                dynamic_positional_weights = self.compute_dynamic_positional_weights(gen_length, unmasked_ratio, device=x0.device)
-                # print(f"conf shape: {confidence[:, prompt_len:].shape}, dynamic_positional_weights shape: {dynamic_positional_weights.shape}")
-                confidence[:, prompt_len:] = confidence[:, prompt_len:] * dynamic_positional_weights
-            else:
-                pass
+            # if self.positional_weights_type == 'absolute':
+            #     confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.absolute_positional_weights[current_step]
+            # elif self.positional_weights_type == 'ratio':
+            #     dynamic_positional_weights = self.compute_dynamic_positional_weights(gen_length, unmasked_ratio, device=x0.device)
+            #     confidence[:, prompt_len:] = confidence[:, prompt_len:] * dynamic_positional_weights
+            # elif self.positional_weights_type == 'static':
+            #     confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.static_positional_weights[current_step]
+            # else:
+            #     pass
 
             confidence_in_active_zones = torch.where(dynamic_accel_mask, confidence, -np.inf)
 
@@ -512,7 +520,9 @@ class MRSampler(BaseSampler):
     def mop_up_phase(
             self,
             x: Tensor,
-            prompt_index: Tensor
+            prompt_index: Tensor,
+            block_mask: Tensor = None,
+            current_step: int = -1
     ):
         """
             阶段三：收尾阶段
@@ -534,18 +544,22 @@ class MRSampler(BaseSampler):
 
         prompt_len = prompt_index[0].sum().item()
         mask_index = (x == self.mask_id)
+        mask_index[~block_mask] = False     #semi-ar support
         num_transfer_tokens = get_num_transfer_tokens(mask_index, todo_steps)  # (b, todo_steps)
 
-        for step_i in range(todo_steps):
+        for i in range(todo_steps):
             x0, confidence, org_confidence = self._model_forward(x, prompt_index)
             steps_used += 1
 
-            _, topk_idxs = torch.topk(confidence, k=num_transfer_tokens[0, step_i], dim=1)  # (b, l)
+            confidence[~block_mask] = -np.inf   #semi support
+
+            _, topk_idxs = torch.topk(confidence, k=num_transfer_tokens[0, i], dim=1)  # (b, l)
 
             transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
             transfer_index.scatter_(dim=1, index=topk_idxs, value=True)
             x[transfer_index] = x0[transfer_index]
 
+            print(f"curr_step {current_step + i + 1} [Mop-up]: n_transferred({transfer_index.sum().item()})")
             # x.scatter_(dim=1, index=topk_idxs, src=x0) scatter天坑！理由见exploration中的scatter使用
 
             outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
@@ -571,26 +585,29 @@ class MRSampler(BaseSampler):
         assert gen_length <= self.model_max_genlength, f"gen_length must <= model_max_genlength({self.model_max_genlength})"
         assert max_steps <= self.model_max_steps, f"steps must <= model_max_steps({self.model_max_steps})"
 
-        # initalize positional weights
-        if self.positional_weights_type == 'absolute':
-            self.absolute_positional_weights = self.precompute_absolute_positional_weights(
-                max_steps=max_steps, gen_length=gen_length, device=self.model.device, dtype=torch.float32
-            )
-        elif self.positional_weights_type == 'ratio':
-            pass
-        else:
-            pass
-
-
-        x = torch.full((1, prompt.shape[1] + gen_length), self.mask_id, dtype=torch.long).to(self.model.device)
-        x[:, :prompt.shape[1]] = prompt.clone()
-        prompt_index = (x != self.mask_id)
-
         assert gen_length % block_length == 0
         num_blocks = gen_length // block_length
 
         assert max_steps % num_blocks == 0
         block_steps = max_steps // num_blocks
+
+        self.gen_length = gen_length
+        self.max_steps = max_steps
+        self.block_length = block_length
+
+        # initalize positional weights
+        if self.positional_weights_type == 'absolute':
+            self.absolute_positional_weights = self.precompute_absolute_positional_weights(
+                max_steps=max_steps, gen_length=gen_length, device=self.model.device, dtype=torch.float32
+            )
+        elif self.positional_weights_type == 'static':
+            self.static_positional_weights = self.precompute_static_positional_weights(
+                gen_length=gen_length, device=self.model.device, dtype=torch.float32
+            )
+        elif self.positional_weights_type == 'ratio':
+            pass
+        else:
+            pass
 
         # 主循环 (探索与加速)
         outputs = []
@@ -603,21 +620,32 @@ class MRSampler(BaseSampler):
         # print(f"Starting Inference ============================= {x.shape}")
         start_time = time.perf_counter()
 
+        x = torch.full((1, prompt.shape[1] + gen_length), self.mask_id, dtype=torch.long).to(self.model.device)
+        x[:, :prompt.shape[1]] = prompt.clone()
+        prompt_index = (x != self.mask_id)
+        prompt_len = prompt_index.sum(dim=1).item()
+
         for num_block in range(num_blocks):
-            # for semi-ar
-            for EA_idx in range(max_steps - self.max_mopup_steps):
-                # 检查是否大部分已经解码完成
-                num_masked = (x == self.mask_id).sum().item()
-                masked_ratio = 1.0 * num_masked / gen_length
+            self.block_start = prompt_len + num_block * block_length
+            self.block_end = prompt_len + (num_block + 1) * block_length
+
+            block_mask = torch.ones((1, prompt_len + gen_length), dtype=torch.bool).to(self.device)
+            block_mask[:, prompt_len + (num_block + 1) * block_length:] = 0
+
+            for EA_idx in range(block_steps - self.max_mopup_steps):
+                # check mopup condition in the current block
+                num_masked = (x[block_mask] == self.mask_id).sum().item()
+                masked_ratio = 1.0 * num_masked / block_length
                 if masked_ratio < (1 - self.mopup_gate_ratio):
-                    # print(f"已解码{(1 - masked_ratio) * 100}% (>{mopup_gate_ratio * 100}%), 退出E-A阶段")
+                    print(f"block {num_block}: E-A turn ends with unmased ratio: {(1 - masked_ratio) * 100}% (>{self.mopup_gate_ratio * 100}%)")
                     break
 
-                # ① 探索阶段
+                # ① Divide
                 x, intervals, exploration_steps, exploration_outputs, exploration_confidences, exploration_transfer_idxs, history_intervals \
                     = self.exploration_phase(
                     x,
                     prompt_index,
+                    block_mask=block_mask,
                     exp_steps=min(self.max_exploration_steps, max_steps - accumulated_steps),
                     EA_idx=EA_idx,
                     current_step=accumulated_steps
@@ -634,12 +662,13 @@ class MRSampler(BaseSampler):
                 # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Exploration")
                 accumulated_steps += exploration_steps
 
-                # ② 加速阶段
+                # ② Conquer
                 x, acceleration_steps, outputs_acceleration, confidences_acceleration, transfer_idxs_acceleration \
                     = self.acceleration_phase(
                         x,
                         prompt_index,
-                        intervals,
+                        block_mask=block_mask,
+                        intervals=intervals,
                         current_step=accumulated_steps,
                 )
 
@@ -652,10 +681,16 @@ class MRSampler(BaseSampler):
                 accumulated_steps += acceleration_steps
                 # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Acceleration")
                 # TODO: 根据当前自信度(第1和第2答案的logits均值)，决定进入收尾还是直接commit答案
-            # ③ 收尾阶段
+
+            # ③ Finalize
             # print("\n--- 进入收尾阶段 ---")
             x, mopup_steps, outputs_mopup, confidences_mopup, transfer_idxs_mopup \
-                = self.mop_up_phase(x, prompt_index)
+                = self.mop_up_phase(
+                    x,
+                    prompt_index,
+                    block_mask=block_mask,
+                    current_step=accumulated_steps
+                )
             # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Mopup")
             if mopup_steps > 0:
                 outputs.extend(outputs_mopup)
@@ -667,8 +702,8 @@ class MRSampler(BaseSampler):
                 pass
                 # print(f"No Need for mop_up phase")
             # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Mopup")
-
             accumulated_steps += mopup_steps
+            print(f"block {num_block} is decoded over in step {accumulated_steps}.")
 
         # compute metrics
         end_time = time.perf_counter()
@@ -700,13 +735,13 @@ def main():
     model_path = "../models/LLaDA-8B-Instruct"
 
     # 4-shot prompt
-    # few_shot_filename = "../prompts/gsm8k_shot.txt"
-    # with open(few_shot_filename, "r", encoding="utf-8") as f:
-    #     prompts= f.readlines()[0:3]
+    few_shot_filename = "../prompts/gsm8k_shot.txt"
+    with open(few_shot_filename, "r", encoding="utf-8") as f:
+        prompts= f.readlines()[0:3]
 
     # base prompt
-    gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    prompts = gsm8k_dataset['test']['question'][0:3]
+    # gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
+    # prompts = gsm8k_dataset['test']['question'][0:3]
     # # prompts = gsm8k_dataset['test']['question'][39:40]
     #
     # prompts = [
@@ -719,9 +754,9 @@ def main():
         cfg_scale=0.0,
         temperature=0.0,
         max_exploration_steps=10,
-        exploration_N=5,
+        exploration_N=3,
         exploration_M=2,
-        exploration_threshold=0.25,
+        exploration_threshold=0.15,
         acceleration_parallel_method='fixed',
         acceleration_threshold=0.9,
         acceleration_low_threshold=0.6,
@@ -734,7 +769,6 @@ def main():
         initial_min_weight=0.1,
     )
 
-    max_gen_steps = 256
     sampler = MRSampler.from_path(
         model_path=model_path,
         device=device,
@@ -742,6 +776,9 @@ def main():
         torch_dtype=torch.bfloat16
     )
 
+
+    max_steps = 256
+    block_length = 256
     for i, prompt_text in enumerate(prompts):
         print('=' * 20 + f" Generating prompt_idx: {i} " + "=" * 20)
         tokenizer = sampler.tokenizer
@@ -751,12 +788,11 @@ def main():
         input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
 
         # exploration_thresholds = [0.15, 0.25, 0.4] # -> 0.25 is good for 'fixed', 'factor'
-        # exploration_factors = [0.6, 0.7, 0.8, 0.9, 1.0]
         exploration_thresholds = [0.25]
         for exp_tr in exploration_thresholds:
             sampler.exploration_threshold = exp_tr
             print('=' * 20 + f" exploration_threshold: {exp_tr} " + "=" * 20)
-            OUT = sampler.generate(input_ids, gen_length=max_gen_steps, max_steps=max_gen_steps)
+            OUT = sampler.generate(input_ids, gen_length=max_steps, max_steps=max_steps, block_length=block_length)
             out = OUT.out
             ans = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
             print(f"Prompt_{i}'s answer: {ans}\n")
