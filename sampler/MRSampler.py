@@ -24,7 +24,7 @@ class MRSamplerConfig(SamplerConfig):
     max_exploration_steps: int = 10
     exploration_N: int = 2
     exploration_M: int = 3
-    exploration_threshold: float = 0.15
+    exploration_threshold: float = 0.2
     # Acceleration phase config
     acceleration_parallel_method: Literal["fixed", "factor", "entropy", "margin"] = "fixed"
     acceleration_threshold: float = 0.8
@@ -735,15 +735,14 @@ def main():
     model_path = "../models/LLaDA-8B-Instruct"
 
     # 4-shot prompt
-    few_shot_filename = "../prompts/gsm8k_shot.txt"
-    with open(few_shot_filename, "r", encoding="utf-8") as f:
-        prompts= f.readlines()[0:3]
+    # few_shot_filename = "../prompts/gsm8k_shot.txt"
+    # with open(few_shot_filename, "r", encoding="utf-8") as f:
+    #     prompts= f.readlines()[0:3]
 
     # base prompt
-    # gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    # prompts = gsm8k_dataset['test']['question'][0:3]
-    # # prompts = gsm8k_dataset['test']['question'][39:40]
-    #
+    gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
+    prompts = gsm8k_dataset['test']['question'][2:3]
+
     # prompts = [
     #     "你知道周杰伦吗",
     #     "请写一首关于春天的诗",
@@ -754,7 +753,7 @@ def main():
         cfg_scale=0.0,
         temperature=0.0,
         max_exploration_steps=10,
-        exploration_N=3,
+        exploration_N=6,
         exploration_M=2,
         exploration_threshold=0.15,
         acceleration_parallel_method='fixed',
@@ -788,7 +787,7 @@ def main():
         input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
 
         # exploration_thresholds = [0.15, 0.25, 0.4] # -> 0.25 is good for 'fixed', 'factor'
-        exploration_thresholds = [0.25]
+        exploration_thresholds = [0.2]
         for exp_tr in exploration_thresholds:
             sampler.exploration_threshold = exp_tr
             print('=' * 20 + f" exploration_threshold: {exp_tr} " + "=" * 20)

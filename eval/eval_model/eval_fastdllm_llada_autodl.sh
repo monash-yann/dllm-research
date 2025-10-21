@@ -11,12 +11,14 @@ PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
 MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 
 # available gpus
-GPU_IDS=(0 1)
+GPU_IDS=(0 1 2 3)
 MASTER_PORT=8086
 
-TASKS="gsm8k"
-NUM_FEWSHOT=4
+#TASKS="gsm8k"
+#NUM_FEWSHOT=4
 #N_LIMIT=6
+
+TASKS="mbpp"
 
 #TASKS="humaneval"
 
@@ -102,4 +104,4 @@ do
         > "${OUTPUT_DIR}/log.txt" 2>&1
 done
 # only in autodl
-/usr/bin/shutdown
+#/usr/bin/shutdown

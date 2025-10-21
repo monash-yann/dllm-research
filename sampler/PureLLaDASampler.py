@@ -20,7 +20,7 @@ from dataclasses import dataclass, fields, asdict, field
 @dataclass
 class PureLLaDASamplerConfig(SamplerConfig):
     remasking: Literal["random", "low_confidence"] = "low_confidence"
-    decoding_method: Literal["topk", "factor"] = "topk"
+    decoding_method: Literal["topk", "factor", "fixed"] = "topk"
     k:int = -1
 
 
@@ -166,8 +166,6 @@ class PureLLaDASampler(BaseSampler):
                                     transfer_index.scatter_(dim=1, index=cand_idxs[:conf_idx + 1].unsqueeze(0),
                                                             value=True)
                                     break
-                        _, select_index = torch.topk(conf_b, k=1)
-                        transfer_index[b, select_index] = True
                     elif self.decoding_method == 'topk':  # default topk
                         if self.k:
                             k = self.k
@@ -180,11 +178,18 @@ class PureLLaDASampler(BaseSampler):
                             _, select_index = torch.topk(confidence[b], k=min(k, n_effective))
                             transfer_index[b, select_index] = True
                             # print(f"select_index: {select_index.cpu().numpy()}.")
+                    elif self.decoding_method == 'fixed':
+                        transfer_index = confidence > 0.9   # maximum setting by fast-dllm
                     else:
                         pass
+                    # top-1兜底
+                    if transfer_index.sum().item() == 0:
+                        for b in range(confidence.shape[0]):
+                            _, select_index = torch.topk(confidence[b], k=1)
+                            transfer_index[b, select_index] = True
 
                 x[transfer_index] = x0[transfer_index]
-                print(f"step: {accumulated_steps}, block: {num_block}, i: {i}, n_transferred: {transfer_index.sum().item()}.")
+                # print(f"step: {accumulated_steps}, block: {num_block}, i: {i}, n_transferred: {transfer_index.sum().item()}.")
 
                 # collecting states
                 outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
@@ -248,16 +253,16 @@ def main():
     config = PureLLaDASamplerConfig(
         cfg_scale=0.0,
         temperature=0.0,
-        positional_weights_type='static',
+        positional_weights_type='none',
         max_weight=1.0,
-        initial_min_weight=0.1,
+        initial_min_weight=0.0,
         remasking="low_confidence",
-        decoding_method="topk",
+        decoding_method="fixed",
         k=2
     )
 
     max_gen_steps = 128
-    block_length = 64
+    block_length = 128
     sampler = PureLLaDASampler.from_path(
         model_path=model_path,
         device=device,

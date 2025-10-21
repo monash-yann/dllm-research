@@ -18,7 +18,9 @@ from utils import visualize_overall_steps, plot_decoding_history_on_ax, plot_sin
 def run_gen_until(
     sampler: MRSampler,
     prompts: list,
-    gen_length: int, max_steps: int,
+    gen_length: int,
+    max_steps: int,
+    block_length: int,
     output_dir: str,
     vis_overall=True, vis_attn_map=True, console_show=False, file_save=True,
     device: str = 'cuda',
@@ -53,7 +55,7 @@ def run_gen_until(
         input_ids = tokenizer(prompt)['input_ids']
         input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
 
-        OUT: GenerateOutput = sampler.generate(input_ids, gen_length=gen_length, max_steps=max_steps)
+        OUT: GenerateOutput = sampler.generate(input_ids, gen_length=gen_length, max_steps=max_steps, block_length=block_length)
         out = OUT.out
         outputs = OUT.outputs
         phase_states = OUT.phase_states
@@ -198,91 +200,104 @@ def visualize_MR():
         cfg_scale=0.0,
         temperature=0.0,
         max_exploration_steps=10,
-        exploration_N=6,
+        exploration_N=3,
         exploration_M=2,
         exploration_threshold=0.25,
         acceleration_parallel_method='fixed',
         acceleration_threshold=0.9,
         acceleration_low_threshold=0.6,
-        acceleration_factor=0.6,
-        max_mopup_steps=50,
+        acceleration_factor=1,
+        max_mopup_steps=10,
         mopup_gate_ratio=0.85,
         mopup_speed=2,
         positional_weights_type='none',
         max_weight=1.0,
-        initial_min_weight=0.0,
+        initial_min_weight=0.1,
     )
-    # 用户传入的kwargs覆盖默认参数
-    sampler = MRSampler.from_path(model_path, config=config, device=device, torch_dtype=torch.bfloat16)
+
+    sampler = MRSampler.from_path(
+        model_path=model_path,
+        device=device,
+        config=config,
+        torch_dtype=torch.bfloat16
+    )
 
     # exploration_thresholds = [0.05, 0.15, 0.3, 0.5]
     # exploration_thresholds = [0.2, 0.25]  -> No Positionals Weights下, 0.25表现最好
     # exploration_thresholds = [0.25, 0.1, 0.15, 0.35]
     # exploration_thresholds = [0.15, 0.35]
     exploration_thresholds = [0.25]
-    exploration_Ns = [6,3]
 
     sampler.positional_weights_type = 'none'
-    for exp_tr in exploration_thresholds:
-        sampler.exploration_threshold = exp_tr
-        for exp_N in exploration_Ns:
-            sampler.exploration_N = exp_N
-            # output_dir = f"./imgs/Test/gsm8k_s256/N{sampler.exploration_N}E{sampler.max_exploration_steps}_ET{et}_DPimin{sampler.initial_min_weight}_V1"
-            output_dir = f"imgs/Test/gsm8k_s256/N{sampler.exploration_N}E{sampler.max_exploration_steps}_ET{exp_tr}_APM{sampler.acceleration_parallel_method}_PWT{sampler.positional_weights_type}_imw${sampler.initial_min_weight}_V4Test"
-            run_gen_until(
-                sampler=sampler,
-                prompts=gsm8k_prompts[:5],
-                max_steps=256,
-                gen_length=256,
-                output_dir=output_dir,
-                device=device,
-                console_show=False, file_save=True, vis_overall=True, vis_attn_map=False
-            )
+
+    gen_length = 128
+    block_length = 64
+    output_dir = f"imgs/dico+V1/gsm8k_L${gen_length}_B${block_length}/N{sampler.exploration_N}E{sampler.max_exploration_steps}_APM{sampler.acceleration_parallel_method}_PWT{sampler.positional_weights_type}_imw${sampler.initial_min_weight}"
+    run_gen_until(
+        sampler=sampler,
+        prompts=gsm8k_prompts[:5],
+        max_steps=gen_length,
+        gen_length=gen_length,
+        block_length=block_length,
+        output_dir=output_dir,
+        device=device,
+        console_show=False, file_save=True, vis_overall=True, vis_attn_map=False
+    )
 
 def visualize_pure_llada():
     print(f"visualizing pure llada, current path: {os.path.abspath(__file__)}")
     device = 'cuda:0'
 
     # 提示词替换，与4-shot的行为保持一致
-    few_shot_filename = "../prompts/gsm8k_shot.txt"
-    gsm8k_prompts = []
-    with open(few_shot_filename, "r", encoding="utf-8") as f:
-        for line in f:
-            # python会把.txt中的字符当作原始字符串，此处转为普通字符串
-            corrected_line = line.replace('\\n', '\n')
-            gsm8k_prompts.append(corrected_line)
+    # few_shot_filename = "../prompts/gsm8k_shot.txt"
+    # gsm8k_prompts = []
+    # with open(few_shot_filename, "r", encoding="utf-8") as f:
+    #     for line in f:
+    #         # python会把.txt中的字符当作原始字符串，此处转为普通字符串
+    #         corrected_line = line.replace('\\n', '\n')
+    #         gsm8k_prompts.append(corrected_line)
     # gsm8k_prompts = gsm8k_prompts[:1]
 
     # 普通0-shot提示词
-    # gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    # gsm8k_prompts = gsm8k_dataset['test']['question'][0:3]
+    gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
+    gsm8k_prompts = gsm8k_dataset['test']['question'][0:1]
 
-    # get_local.activate()  # 在引入模型之前，激活装饰器
+
+    get_local.activate()  # 在引入模型之前，激活装饰器
     model_path = "../models/LLaDA-8B-Instruct"
     config = PureLLaDASamplerConfig(
         cfg_scale=0.0,
         temperature=0.0,
-        positional_weights_type='ratio',
+        positional_weights_type='none',
         max_weight=1.0,
         initial_min_weight=0.0,
-        block_length=256,
-        remasking="low_confidence"
+        remasking="low_confidence",
+        decoding_method="topk",
+        k=2
     )
-    # 用户传入的kwargs覆盖默认参数
-    sampler = PureLLaDASampler.from_path(model_path, config=config, device=device, torch_dtype=torch.bfloat16)
 
-    output_dir = f"imgs/Test/gsm8k_s256/pure_llada_PWT{sampler.positional_weights_type}_imw{sampler.initial_min_weight}_VTEST"
+    gen_length = 64
+    block_length = 64
+    sampler = PureLLaDASampler.from_path(
+        model_path=model_path,
+        device=device,
+        config=config,
+        torch_dtype=torch.bfloat16
+    )
+
+    output_dir = f"imgs/pure-MTD${sampler.decoding_method}_${sampler.k if sampler.k!=-1 else ''}/gsm8k_L${gen_length}_B${block_length}/"
     run_gen_until(
         sampler=sampler,
         prompts=gsm8k_prompts,
-        max_steps=256,
-        gen_length=256,
+        max_steps=gen_length,
+        gen_length=gen_length,
+        block_length=block_length,
         output_dir=output_dir,
         device=device,
-        console_show=False, file_save=True, vis_overall=True, vis_attn_map=False,
+        console_show=False, file_save=True, vis_overall=True, vis_attn_map=True,
     )
 
 if __name__ == "__main__":
-    visualize_MR()
-    # visualize_pure_llada()
+    # visualize_MR()
+    visualize_pure_llada()
 

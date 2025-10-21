@@ -11,12 +11,12 @@ PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
 MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 
 # available gpus
-GPU_IDS=(0 1)
+GPU_IDS=(0 1 2 3)
 MASTER_PORT=8086
 
 # gsm8k NUM_FEWSHOT should be 4
 TASKS="gsm8k"
-NUM_FEWSHOT=4
+NUM_FEWSHOT=0
 
 # 为了快速测试，限制评估的样本数量 (正式评估时请注释掉此行)
 #N_LIMIT=2
@@ -31,7 +31,7 @@ MC_NUM=128
 # sampler parameters
 CFG_SCALE=0.0
 TEMPERATURE=0.0
-POSITIONAL_WEIGHTS_TYPE='absolute'
+POSITIONAL_WEIGHTS_TYPE='none'
 MAX_WEIGHT=1.0
 INITIAL_MIN_WEIGHT=0.0
 REMASKING="low_confidence"
@@ -40,7 +40,7 @@ DECODING_METHOD="topk"
 MODEL_NAME=$(basename "$MODEL_PATH")
 
 SL_VALUES=(256)
-ks=(2 3 4 5 6)
+ks=(1)
 
 for SL in "${SL_VALUES[@]}"
 do
@@ -48,10 +48,6 @@ do
   GEN_LENGTH=$SL
   STEPS=$SL
   BLOCK_LENGTH=$SL
-
-  OUTPUT_DIR="eval/outputs/${MODEL_NAME}_pure_MTD${DECODING_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}"
-  rm -rf $OUTPUT_DIR
-  mkdir -p $OUTPUT_DIR
 
   echo "================================================="
   echo "Project Root: $PROJECT_ROOT"
@@ -82,6 +78,9 @@ do
       MODEL_ARGS+=",decoding_method=$DECODING_METHOD"
       MODEL_ARGS+=",k=$k"
 
+      OUTPUT_DIR="eval/outputs/${MODEL_NAME}_pure_MTD${DECODING_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}/k${k}"
+      rm -rf $OUTPUT_DIR
+      mkdir -p $OUTPUT_DIR
       cd "$PROJECT_ROOT" || exit
 
       stdbuf -o0 "$CONDA_EXE" run -n "$CONDA_ENV_NAME" --no-capture-output \
