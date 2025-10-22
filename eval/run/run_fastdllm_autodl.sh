@@ -11,7 +11,7 @@ PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
 MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 
 # available gpus
-GPU_IDS=(0)
+GPU_IDS=(0 1 2 3)
 MASTER_PORT=8086
 
 #TASKS="gsm8k"
@@ -41,10 +41,9 @@ POSITIONAL_WEIGHTS_TYPE='none'
 MAX_WEIGHT=1.0
 INITIAL_MIN_WEIGHT=0.0
 REMASKING="low_confidence"
-DECODING_METHOD="fixed"
+DECODING_METHOD="factor"
 
 MODEL_NAME=$(basename "$MODEL_PATH")
-
 
 SL_VALUES=(256)
 

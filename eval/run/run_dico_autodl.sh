@@ -11,7 +11,7 @@ PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
 MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 
 # available gpus
-GPU_IDS=(0 1 2 3)
+GPU_IDS=(0 1 2 3 4 5)
 MASTER_PORT=8086
 
 #TASKS="gsm8k"
@@ -20,8 +20,10 @@ MASTER_PORT=8086
 
 #TASKS="mbpp"
 
-TASKS="humaneval"
-#N_LIMIT=4
+#TASKS="humaneval"
+
+TASKS="math-500"
+INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/math-500/"
 
 
 GPU_LIST=$(IFS=,; echo "${GPU_IDS[*]}")
@@ -36,18 +38,18 @@ CFG_SCALE=0.0
 TEMPERATURE=0.0
 MAX_EXPLORATION_STEPS=10
 EXPLORATION_N_VALUES=(1 2 3 4 5 6 7 8)
-#EXPLORATION_N_VALUES=(8 7 6 5 4 3 2)
+#EXPLORATION_N_VALUES=(7)
 EXPLORATION_M=2
 EXPLORATION_THRESHOLD=0.25
 ACCELERATION_PARALLEL_METHOD='fixed'
 ACCELERATION_FACTOR=1
 ACCELERATION_THRESHOLD=0.9
 ACCELERATION_LOW_THRESHOLD=0.6
-POSITIONAL_WEIGHTS_TYPE='ratio'
 MOPUP_GATE_RATIO=0.8
 MAX_MOPUP_STEPS=50
 MOPUP_SPEED=2
 
+POSITIONAL_WEIGHTS_TYPE='ratio'
 MAX_WEIGHT=1.0
 INITIAL_MIN_WEIGHT=0.0
 
@@ -65,7 +67,7 @@ do
   for EXPLORATION_N in "${EXPLORATION_N_VALUES[@]}"
   do
     echo "========================== evaluating N=${EXPLORATION_N} =========================="
-    OUTPUT_DIR="eval/outputs/${MODEL_NAME}_dico_APM${ACCELERATION_PARALLEL_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_DVD+ACC_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${STEPS}/N${EXPLORATION_N}"
+    OUTPUT_DIR="eval/outputs/${MODEL_NAME}_dico_APM${ACCELERATION_PARALLEL_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_DVDonly_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${STEPS}/N${EXPLORATION_N}"
     rm -rf $OUTPUT_DIR
     mkdir -p $OUTPUT_DIR
 
@@ -118,6 +120,7 @@ do
           --model eval_sampler \
           --confirm_run_unsafe_code \
           --tasks $TASKS \
+          ${INCLUDE_PATH:+--include_path $INCLUDE_PATH} \
           ${NUM_FEWSHOT:+ --num_fewshot $NUM_FEWSHOT} \
           --batch_size $BATCH_SIZE \
           --model_args $MODEL_ARGS \
@@ -127,7 +130,6 @@ do
           > "${OUTPUT_DIR}/log.txt" 2>&1
 
   done
-
 done
 # only in autodl
 /usr/bin/shutdown

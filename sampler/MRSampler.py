@@ -414,16 +414,16 @@ class MRSampler(BaseSampler):
             confidence[:, 0: self.block_start] = confidence[:, self.block_end:] = -np.inf
 
             # mutiplying positional weights
-            if self.positional_weights_type == 'absolute':
-                confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.absolute_positional_weights[current_step]
-            elif self.positional_weights_type == 'ratio':
-                unmasked_ratio = (x[:, self.block_start: self.block_end] != self.mask_id).sum().item() / self.block_length
-                dynamic_positional_weights = self.compute_dynamic_positional_weights(gen_length, unmasked_ratio, device=x0.device)
-                confidence[:, prompt_len:] = confidence[:, prompt_len:] * dynamic_positional_weights
-            elif self.positional_weights_type == 'static':
-                confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.static_positional_weights[current_step]
-            else:
-                pass
+            # if self.positional_weights_type == 'absolute':
+            #     confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.absolute_positional_weights[current_step]
+            # elif self.positional_weights_type == 'ratio':
+            #     unmasked_ratio = (x[:, self.block_start: self.block_end] != self.mask_id).sum().item() / self.block_length
+            #     dynamic_positional_weights = self.compute_dynamic_positional_weights(gen_length, unmasked_ratio, device=x0.device)
+            #     confidence[:, prompt_len:] = confidence[:, prompt_len:] * dynamic_positional_weights
+            # elif self.positional_weights_type == 'static':
+            #     confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.static_positional_weights[current_step]
+            # else:
+            #     pass
 
             confidence_in_active_zones = torch.where(dynamic_accel_mask, confidence, -np.inf)
 
