@@ -276,8 +276,8 @@ def visualize_pure_llada():
         k=2
     )
 
-    gen_length = 64
-    block_length = 64
+    gen_length = 128
+    block_length = 128
     sampler = PureLLaDASampler.from_path(
         model_path=model_path,
         device=device,

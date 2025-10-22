@@ -21,6 +21,8 @@ MASTER_PORT=8086
 #TASKS="mbpp"
 
 TASKS="humaneval"
+#N_LIMIT=4
+
 
 GPU_LIST=$(IFS=,; echo "${GPU_IDS[*]}")
 NUM_GPUS=${#GPU_IDS[@]}
@@ -33,7 +35,7 @@ MC_NUM=128
 CFG_SCALE=0.0
 TEMPERATURE=0.0
 MAX_EXPLORATION_STEPS=10
-EXPLORATION_N_VALUES=(1 2 4 8)
+EXPLORATION_N_VALUES=(1 2 3 4 5 6 7 8)
 #EXPLORATION_N_VALUES=(8 7 6 5 4 3 2)
 EXPLORATION_M=2
 EXPLORATION_THRESHOLD=0.25
@@ -63,7 +65,7 @@ do
   for EXPLORATION_N in "${EXPLORATION_N_VALUES[@]}"
   do
     echo "========================== evaluating N=${EXPLORATION_N} =========================="
-    OUTPUT_DIR="eval/outputs/${MODEL_NAME}_dico_APM${ACCELERATION_PARALLEL_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_DVDonly_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${STEPS}/N${EXPLORATION_N}"
+    OUTPUT_DIR="eval/outputs/${MODEL_NAME}_dico_APM${ACCELERATION_PARALLEL_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_DVD+ACC_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${STEPS}/N${EXPLORATION_N}"
     rm -rf $OUTPUT_DIR
     mkdir -p $OUTPUT_DIR
 
@@ -107,7 +109,7 @@ do
     cd "$PROJECT_ROOT" || exit
 
     #    --ddp_backend nccl \: ddp mode set by running accelerate config instead of argument
-    stdbuf -o0 conda run -n "$CONDA_ENV_NAME" --no-capture-output \
+    stdbuf -o0 "$CONDA_EXE" run -n "$CONDA_ENV_NAME" --no-capture-output \
       CUDA_VISIBLE_DEVICES=$GPU_LIST \
       accelerate launch \
         --num_processes $NUM_GPUS \
@@ -128,4 +130,4 @@ do
 
 done
 # only in autodl
-#/usr/bin/shutdown
+/usr/bin/shutdown

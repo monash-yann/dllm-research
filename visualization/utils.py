@@ -321,7 +321,7 @@ def plot_single_attention_map_on_ax(ax, attention_map_data, title, prompt_len, t
     这是从 visualize_attention_maps 中抽取的单个图绘制逻辑。
     """
 
-    ax.imshow(attention_map_data, cmap='viridis', origin="upper")
+    ax.imshow(attention_map_data, cmap='viridis', origin="upper", vmin=0, vmax=0.5)
     ax.xaxis.tick_top()
     ax.xaxis.set_label_position('top')
     ax.set_title(title)

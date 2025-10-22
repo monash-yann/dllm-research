@@ -414,15 +414,16 @@ class MRSampler(BaseSampler):
             confidence[:, 0: self.block_start] = confidence[:, self.block_end:] = -np.inf
 
             # mutiplying positional weights
-            # if self.positional_weights_type == 'absolute':
-            #     confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.absolute_positional_weights[current_step]
-            # elif self.positional_weights_type == 'ratio':
-            #     dynamic_positional_weights = self.compute_dynamic_positional_weights(gen_length, unmasked_ratio, device=x0.device)
-            #     confidence[:, prompt_len:] = confidence[:, prompt_len:] * dynamic_positional_weights
-            # elif self.positional_weights_type == 'static':
-            #     confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.static_positional_weights[current_step]
-            # else:
-            #     pass
+            if self.positional_weights_type == 'absolute':
+                confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.absolute_positional_weights[current_step]
+            elif self.positional_weights_type == 'ratio':
+                unmasked_ratio = (x[:, self.block_start: self.block_end] != self.mask_id).sum().item() / self.block_length
+                dynamic_positional_weights = self.compute_dynamic_positional_weights(gen_length, unmasked_ratio, device=x0.device)
+                confidence[:, prompt_len:] = confidence[:, prompt_len:] * dynamic_positional_weights
+            elif self.positional_weights_type == 'static':
+                confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.static_positional_weights[current_step]
+            else:
+                pass
 
             confidence_in_active_zones = torch.where(dynamic_accel_mask, confidence, -np.inf)
 
@@ -522,7 +523,8 @@ class MRSampler(BaseSampler):
             x: Tensor,
             prompt_index: Tensor,
             block_mask: Tensor = None,
-            current_step: int = -1
+            current_step: int = -1,
+            block_step_i: int = -1
     ):
         """
             阶段三：收尾阶段
@@ -530,8 +532,8 @@ class MRSampler(BaseSampler):
             speed: 每次decode的[MASK]数量，默认为2
         """
 
-        todo_steps = math.ceil((x == self.mask_id).sum(dim=1).item() / self.mopup_speed)
-        todo_steps = min(todo_steps, self.max_mopup_steps)
+        todo_steps = math.ceil((x[:, self.block_start: self.block_end] == self.mask_id).sum(dim=1).item() / self.mopup_speed)
+        todo_steps = min(todo_steps, self.block_steps - block_step_i)
 
         outputs = []
         confidences = []
@@ -594,6 +596,7 @@ class MRSampler(BaseSampler):
         self.gen_length = gen_length
         self.max_steps = max_steps
         self.block_length = block_length
+        self.block_steps = block_steps
 
         # initalize positional weights
         if self.positional_weights_type == 'absolute':
@@ -632,6 +635,7 @@ class MRSampler(BaseSampler):
             block_mask = torch.ones((1, prompt_len + gen_length), dtype=torch.bool).to(self.device)
             block_mask[:, prompt_len + (num_block + 1) * block_length:] = 0
 
+            block_step_i = 0
             for EA_idx in range(block_steps - self.max_mopup_steps):
                 # check mopup condition in the current block
                 num_masked = (x[block_mask] == self.mask_id).sum().item()
@@ -660,6 +664,7 @@ class MRSampler(BaseSampler):
                 exploration_intervals.append({'inceptive_step': accumulated_steps, 'history_intervals': history_intervals})
                 # print(f"exploration phase ends, use steps: {exploration_steps}, TPS: {(num_masked - num_masked_exploration) / (exploration_steps)}")
                 # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Exploration")
+                block_step_i += exploration_steps
                 accumulated_steps += exploration_steps
 
                 # ② Conquer
@@ -678,6 +683,7 @@ class MRSampler(BaseSampler):
                 transfer_idxs.extend(transfer_idxs_acceleration)
                 phase_states.append(
                     {'phase': 'acceleration', 'range': (accumulated_steps, accumulated_steps + acceleration_steps)})
+                block_step_i += acceleration_steps
                 accumulated_steps += acceleration_steps
                 # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Acceleration")
                 # TODO: 根据当前自信度(第1和第2答案的logits均值)，决定进入收尾还是直接commit答案
@@ -689,7 +695,8 @@ class MRSampler(BaseSampler):
                     x,
                     prompt_index,
                     block_mask=block_mask,
-                    current_step=accumulated_steps
+                    current_step=accumulated_steps,
+                    block_step_i=block_step_i
                 )
             # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Mopup")
             if mopup_steps > 0:
@@ -702,6 +709,7 @@ class MRSampler(BaseSampler):
                 pass
                 # print(f"No Need for mop_up phase")
             # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Mopup")
+            block_step_i += mopup_steps
             accumulated_steps += mopup_steps
             print(f"block {num_block} is decoded over in step {accumulated_steps}.")
 

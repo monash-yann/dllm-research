@@ -2,12 +2,12 @@
 
 # 当任何命令失败时立即退出脚本
 set -e
-export CONDA_EXE="/homebck/home/xiangzhong_guest/miniconda3/condabin/conda"
+export CONDA_EXE="/root/miniconda3/bin/conda"
 export HF_ENDPOINT=https://hf-mirror.com
 export HF_ALLOW_CODE_EVAL=1
 
-CONDA_ENV_NAME="llada118"
-PROJECT_ROOT="/homebck/home/xiangzhong_guest/LLADA/llada_sampling_system"
+CONDA_ENV_NAME="dico"
+PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
 MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 
 # available gpus
@@ -23,15 +23,13 @@ MASTER_PORT=8086
 #TASKS="humaneval"
 
 # MBPP has a default(maximum) fewshot number of 3
-#TASKS="mbpp"
+TASKS="mbpp"
  
 # math-500 is a dataset on huggingface
-TASKS="math-500"
-INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/math-500/"
-N_LIMIT=4
+#TASKS="math-500"
+#INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/math-500/"
+#N_LIMIT=4
 
-# 为了快速测试，限制评估的样本数量 (正式评估时请注释掉此行)
-#N_LIMIT=2
 
 GPU_LIST=$(IFS=,; echo "${GPU_IDS[*]}")
 NUM_GPUS=${#GPU_IDS[@]}
@@ -61,7 +59,7 @@ do
   STEPS=$SL
   BLOCK_LENGTH=$SL
 
-  OUTPUT_DIR="eval/outputs/${MODEL_NAME}_pure_MTD${DECODING_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}"
+  OUTPUT_DIR="eval/outputs/${MODEL_NAME}_pure_baseline_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}"
   rm -rf $OUTPUT_DIR
   mkdir -p $OUTPUT_DIR
 
@@ -81,7 +79,6 @@ do
   MODEL_ARGS+=",remasking=$REMASKING"
   MODEL_ARGS+=",decoding_method=$DECODING_METHOD"
   MODEL_ARGS+=",k=$K"
-
 
   echo "================================================="
   echo "Project Root: $PROJECT_ROOT"
@@ -116,4 +113,4 @@ do
         > "${OUTPUT_DIR}/log.txt" 2>&1
 done
 # only in autodl
-#/usr/bin/shutdown
+/usr/bin/shutdown
