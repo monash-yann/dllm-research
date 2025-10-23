@@ -134,7 +134,7 @@ class BaseSampler:
         self,
         gen_length: int,
         unmasked_ratio: float,
-        ur_factor: float = 1.2,
+        ur_factor: float = 1.0, 
         device: torch.device = 'cuda',
         dtype: torch.dtype = torch.float32
     ) -> torch.Tensor:
@@ -192,7 +192,7 @@ class BaseSampler:
             self,
             x: torch.Tensor,
             prompt_index: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if self.cfg_scale > 0.:
             un_x = x.clone()
             un_x[prompt_index] = self.mask_id
@@ -209,7 +209,7 @@ class BaseSampler:
         x0_p = torch.gather(p, dim=-1, index=x0.unsqueeze(-1)).squeeze(-1)
         mask_index = (x == self.mask_id)
         confidence = torch.where(mask_index, x0_p, -np.inf)
-        return x0, confidence, x0_p
+        return x0, confidence, x0_p, logits
 
     @torch.no_grad()
     @abstractmethod

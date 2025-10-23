@@ -11,16 +11,16 @@ PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
 MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 
 # available gpus
-GPU_IDS=(0 1 2 3)
+GPU_IDS=(0 1 2 3 4 5 6)
 MASTER_PORT=8086
 
-#TASKS="gsm8k"
-#NUM_FEWSHOT=4
+TASKS="gsm8k"
+NUM_FEWSHOT=4
 #N_LIMIT=6
 
 #TASKS="mbpp"
 
-TASKS="humaneval"
+#TASKS="humaneval"
 
 #TASKS="math-500"
 #INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/math-500/"
@@ -37,17 +37,18 @@ MC_NUM=128
 CFG_SCALE=0.0
 TEMPERATURE=0.0
 MAX_EXPLORATION_STEPS=10
-EXPLORATION_N_VALUES=(1 2 3 4 5 6)
+EXPLORATION_N_VALUES=(2 1 3)
 #EXPLORATION_N_VALUES=(7)
 EXPLORATION_M=2
 EXPLORATION_THRESHOLD=0.25
 ACCELERATION_PARALLEL_METHOD='fixed'
 ACCELERATION_FACTOR=1
-ACCELERATION_THRESHOLD=0.9
+ACCELERATION_THRESHOLD=0.8
 ACCELERATION_LOW_THRESHOLD=0.6
-MOPUP_GATE_RATIO=0.8
-MAX_MOPUP_STEPS=50
-MOPUP_SPEED=2
+MOPUP_GATE_RATIO=0.85
+MOPUP_MARGIN_THRESHOLD=3
+MAX_MOPUP_STEPS=12
+MOPUP_SPEED=1
 
 POSITIONAL_WEIGHTS_TYPE='ratio'
 MAX_WEIGHT=1.0
@@ -57,17 +58,18 @@ MODEL_NAME=$(basename "$MODEL_PATH")
 
 SL_VALUES=(256)
 
+BLOCK_LENGTH=64
+
 for SL in "${SL_VALUES[@]}"
 do
-  echo "========================== evaluating SL=${SL} =========================="
+  echo "========================== evaluating SL=${SL}, BL=${BL} =========================="
   GEN_LENGTH=$SL
   STEPS=$SL
-  BLOCK_LENGTH=64
 
   for EXPLORATION_N in "${EXPLORATION_N_VALUES[@]}"
   do
     echo "========================== evaluating N=${EXPLORATION_N} =========================="
-    OUTPUT_DIR="eval/outputs/${MODEL_NAME}_dico_APM${ACCELERATION_PARALLEL_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_DVDonly_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}_BL${BLOCK_LENGTH}/N${EXPLORATION_N}"
+    OUTPUT_DIR="eval/outputs/${MODEL_NAME}_dico+p3_APM${ACCELERATION_PARALLEL_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_DVDonly_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}_BL${BLOCK_LENGTH}/N${EXPLORATION_N}_exptr${EXPLORATION_THRESHOLD}_acctr${ACCELERATION_THRESHOLD}_mptr${MOPUP_MARGIN_THRESHOLD}"
     rm -rf $OUTPUT_DIR
     mkdir -p $OUTPUT_DIR
 
@@ -91,6 +93,7 @@ do
     MODEL_ARGS+=",acceleration_threshold=$ACCELERATION_THRESHOLD"
     MODEL_ARGS+=",acceleration_low_threshold=$ACCELERATION_LOW_THRESHOLD"
     MODEL_ARGS+=",mopup_gate_ratio=$MOPUP_GATE_RATIO"
+    MODEL_ARGS+=",mopup_margin_threshold=$MOPUP_MARGIN_THRESHOLD"
     MODEL_ARGS+=",max_mopup_steps=$MAX_MOPUP_STEPS"
     MODEL_ARGS+=",mopup_speed=$MOPUP_SPEED"
     MODEL_ARGS+=",positional_weights_type=$POSITIONAL_WEIGHTS_TYPE"
@@ -132,4 +135,4 @@ do
   done
 done
 # only in autodl
-#/usr/bin/shutdown
+/usr/bin/shutdown

@@ -41,21 +41,22 @@ POSITIONAL_WEIGHTS_TYPE='none'
 MAX_WEIGHT=1.0
 INITIAL_MIN_WEIGHT=0.0
 REMASKING="low_confidence"
-DECODING_METHOD="factor"
+DECODING_METHOD="fixed"
 
 MODEL_NAME=$(basename "$MODEL_PATH")
 
 SL_VALUES=(256)
 
+BLOCK_LENGTH=128
+
 for SL in "${SL_VALUES[@]}"
 do
-  echo "========================== evaluating SL=${SL} =========================="
+  echo "========================== evaluating SL=${SL}, BL=${BL} =========================="
 
   GEN_LENGTH=$SL
   STEPS=$SL
-  BLOCK_LENGTH=$SL
 
-  OUTPUT_DIR="eval/outputs/${MODEL_NAME}_pure_MTD${DECODING_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}"
+  OUTPUT_DIR="eval/outputs/${MODEL_NAME}_pure_MTD${DECODING_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}_BL${BLOCK_LENGTH}"
   rm -rf $OUTPUT_DIR
   mkdir -p $OUTPUT_DIR
 

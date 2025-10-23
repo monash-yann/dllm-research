@@ -258,7 +258,7 @@ class BaseEvalHarness(LM):
                 m = [{"role": "user", "content": question}]
                 prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
             prompt = tokenizer(prompt_str, return_tensors="pt").input_ids.to(self.device)
-            print(f"\n{'=' * 20} prompt_str: \n{prompt_str} {'=' * 20}")
+            # print(f"\n{'=' * 20} prompt_str: \n{prompt_str} {'=' * 20}")
 
             stop_tokens = req.args[1]['until']
             stop_tokens.append(tokenizer.eos_token)
@@ -272,7 +272,8 @@ class BaseEvalHarness(LM):
                 if stop_seq in generated_answer:
                     generated_answer = generated_answer.split(stop_seq)[0]
             if on_main_process or self.accelerator is None:
-                print('#' * 20 + f"generated_answer after spliting: {generated_answer}" + '#' * 20)
+                print('#' * 20 + f"generated_answer after spliting:\n"
+                                 f"{generated_answer}" + '#' * 20)
 
             # remove special tokens
             generated_answer_ids = tokenizer(generated_answer)["input_ids"]

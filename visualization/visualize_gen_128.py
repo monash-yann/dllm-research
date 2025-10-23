@@ -180,7 +180,7 @@ def run_gen_until(
 
 def visualize_MR():
     print(f"visualizing MR Sampler, current path: {os.path.abspath(__file__)}")
-    device = 'cuda:2'
+    device = 'cuda:1'
 
     # 提示词替换，与4-shot的行为保持一致
     # few_shot_filename = "../prompts/gsm8k_shot.txt"
@@ -192,10 +192,7 @@ def visualize_MR():
     #         gsm8k_prompts.append(corrected_line)
 
     gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    gsm8k_prompts = gsm8k_dataset['test']['question'][:5]
-
-    humaneval_dataset = load_dataset('openai/openai_humaneval')
-    humaneval_prompts = humaneval_dataset['test']['prompt'][:5]
+    gsm8k_prompts = gsm8k_dataset['test']['question'][:6]
 
     # get_local.activate()  # 在引入模型之前，激活装饰器
     model_path = "../models/LLaDA-8B-Instruct"
@@ -203,7 +200,7 @@ def visualize_MR():
         cfg_scale=0.0,
         temperature=0.0,
         max_exploration_steps=10,
-        exploration_N=2,
+        exploration_N=4,
         exploration_M=2,
         exploration_threshold=0.25,
         acceleration_parallel_method='fixed',
@@ -211,9 +208,8 @@ def visualize_MR():
         acceleration_low_threshold=0.6,
         acceleration_factor=1,
         max_mopup_steps=10,
-        mopup_margin_threshold=5,
         mopup_gate_ratio=0.85,
-        mopup_speed=1,
+        mopup_speed=2,
         positional_weights_type='ratio',
         max_weight=1.0,
         initial_min_weight=0.0,
@@ -230,8 +226,8 @@ def visualize_MR():
     exploration_thresholds = [0.25]
 
     gen_length = 256
-    block_length = 64
-    output_dir = f"imgs/dico+margin_mopup/gsm8k_SL{gen_length}_BL{block_length}/N{sampler.exploration_N}E{sampler.max_exploration_steps}_APM{sampler.acceleration_parallel_method}_PWT{sampler.positional_weights_type}_imw${sampler.initial_min_weight}"
+    block_length = 128
+    output_dir = f"imgs/dico+V1/gsm8k_SL{gen_length}_BL{block_length}/N{sampler.exploration_N}E{sampler.max_exploration_steps}_APM{sampler.acceleration_parallel_method}_PWT{sampler.positional_weights_type}_imw${sampler.initial_min_weight}"
     run_gen_until(
         sampler=sampler,
         prompts=gsm8k_prompts,
@@ -242,7 +238,6 @@ def visualize_MR():
         device=device,
         console_show=False, file_save=True, vis_overall=True, vis_attn_map=False
     )
-
 
 def visualize_pure_llada():
     print(f"visualizing pure llada, current path: {os.path.abspath(__file__)}")

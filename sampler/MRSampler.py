@@ -33,6 +33,7 @@ class MRSamplerConfig(SamplerConfig):
     min_k: int = 2
     # Mop-up phase config
     mopup_gate_ratio: float = 0.9
+    mopup_margin_threshold: float = 5.0
     max_mopup_steps: int = 10
     mopup_speed: int = 2
 
@@ -93,7 +94,6 @@ class MRSampler(BaseSampler):
         exploration_M: 扩张时允许的最大连续失败次数
         threshold: 置信度阈值
         """
-        # print("--- 进入exploration阶段 ---")
         memory_intervals = []  # 之前轮探索得到的intervals [(start1, end1), (start2, end2),...]
         prompt_len = prompt_index.sum(dim=1).item()
         gen_length = x.shape[-1] - prompt_len
@@ -108,7 +108,7 @@ class MRSampler(BaseSampler):
         no_advance_n = 0
         for exp_step in range(exp_steps):
 
-            x0, confidence, org_confidence = self._model_forward(x, prompt_index)
+            x0, confidence, org_confidence, _ = self._model_forward(x, prompt_index)
             current_step += 1
             steps_used += 1
             GG = False
@@ -122,12 +122,12 @@ class MRSampler(BaseSampler):
 
             # mutiplying positional weights
             if self.positional_weights_type == 'absolute':
-                confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.absolute_positional_weights[current_step]
+                confidence[:, self.block_start: self.block_end] = confidence[:, self.block_start: self.block_end] * self.absolute_positional_weights[current_step]
             elif self.positional_weights_type == 'ratio':
-                dynamic_positional_weights = self.compute_dynamic_positional_weights(gen_length, unmasked_ratio, device=x0.device)
-                confidence[:, prompt_len:] = confidence[:, prompt_len:] * dynamic_positional_weights
+                dynamic_positional_weights = self.compute_dynamic_positional_weights(self.block_length, unmasked_ratio, device=x0.device)
+                confidence[:, self.block_start: self.block_end] = confidence[:, self.block_start: self.block_end] * dynamic_positional_weights
             elif self.positional_weights_type == 'static':
-                confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.static_positional_weights[current_step]
+                confidence[:, self.block_start: self.block_end] = confidence[:, self.block_start: self.block_end] * self.static_positional_weights[current_step]
             else:
                 pass
 
@@ -143,10 +143,13 @@ class MRSampler(BaseSampler):
             select_N = min((~invalid_mask).sum().item(), select_N)    # mask且结果不是在前半段的EOT的位置数量
             if select_N == 0:
                 GG = True
+            for b in range(conf_temp.shape[0]):
+                if conf_temp[b].max() <= self.exploration_threshold:
+                    GG = True
 
             if not GG:
                 # soft-NMS式选seed点
-                print(f"NO GG! select_N: {select_N}")
+                # print(f"target select_N: {select_N}")
                 seed_indices = [[] for _ in range(conf_temp.shape[0])]
                 for b in range(conf_temp.shape[0]):
                     conf_b = conf_temp[b].clone()
@@ -156,9 +159,10 @@ class MRSampler(BaseSampler):
                     for i in range(select_N):
                         select_idx = torch.argmax(conf_b).item()
                         # 无点可选提前退出（如N=2，且这两个点距离<exploration_M）
+                        # print(f"==> select_idx {select_idx}, conf: {conf_b[select_idx].item()}, token_id: {x[b, select_idx].item()}")
                         if conf_b[select_idx] <= 0:
-                            select_N = i
-                            break
+                            select_N -= 1
+                            continue
                         # 选择经抑制处理后置信度次高的点
                         seed_indices[b].append(select_idx)
                         # 使用高斯函数抑制近距离权重，使得下次倾向于选择远离当前位置的点
@@ -196,7 +200,7 @@ class MRSampler(BaseSampler):
                             left, right = found_interval_in_memory
                         # 向左扩张...
                         n_consecutive_failures = 0
-                        for i in range(left - 1, prompt_len - 1, -1):
+                        for i in range(left - 1, self.block_start - 1, -1):
                             if pre_demasked_index[b, i] or conf_temp[b, i] < min(self.exploration_threshold, seed_conf): #碰到demask已被demask的位置停止
                                 n_consecutive_failures += 1
                                 if n_consecutive_failures > self.exploration_M:
@@ -207,7 +211,7 @@ class MRSampler(BaseSampler):
                         # left += pre_demasked_index[b, left: left + self.exploration_M].sum().item()  # re-pull
                         # 向右扩张...
                         n_consecutive_failures = 0
-                        for i in range(right + 1, x.shape[1]):
+                        for i in range(right + 1, self.block_end):
                             if pre_demasked_index[b, i] or conf_temp[b, i] < min(self.exploration_threshold, seed_conf): #碰到demask已被demask的位置停止
                                 n_consecutive_failures += 1
                                 if n_consecutive_failures > self.exploration_M:
@@ -229,7 +233,7 @@ class MRSampler(BaseSampler):
                 x[transfer_index] = x0[transfer_index]
                 # x.scatter_(dim=1, src=x0, index=seed_indices) 天坑！！！ scatter方法的意思是从src中顺序地选择赋入x的index位置处。index指定的是x中要被赋值的位置而不是在src中要被选择用于赋值的位置。
 
-                print(f"curr_step {current_step} [Exploration] (unmasked_ratio: {unmasked_ratio:.2f}) exp_step {exp_step + 1}: select_N = {select_N}, found intervals {merged_intervals}")
+                print(f"curr_step {current_step} [Exploration] (block-{self.num_block} unmasked_ratio: {unmasked_ratio:.2f}) exp_step {exp_step + 1}: select_N = {select_N}, found intervals {merged_intervals}")
 
                 # 4. 历史区间更新
                 advance_threshold = 0.1
@@ -256,6 +260,7 @@ class MRSampler(BaseSampler):
                     if no_advance_n >= 2:
                         break
             else:
+                print(f"curr_step {current_step} GG!!!")
                 transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
                 outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
                 confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
@@ -285,7 +290,7 @@ class MRSampler(BaseSampler):
             left_delta = int(left_density * edge_width)
             left = start
             n_hit_wall = 0
-            left_search_min = max(prompt_len, start - left_delta)
+            left_search_min = max(self.block_start, start - left_delta)
             for pos in range(start - 1, left_search_min - 1, -1):
                 if x[0, pos] != self.mask_id:
                     n_hit_wall += 1
@@ -299,7 +304,7 @@ class MRSampler(BaseSampler):
             right_delta = int(right_density * edge_width)
             right = end
             n_hit_wall = 0
-            right_search_max = min(x.shape[1] - 1, end + right_delta)
+            right_search_max = min(self.block_end - 1, end + right_delta)
             for pos in range(end + 1, right_search_max + 1):
                 if x[0, pos] != self.mask_id:
                     n_hit_wall += 1
@@ -311,44 +316,6 @@ class MRSampler(BaseSampler):
 
             density_expansion_intervals.append((left, right))
 
-            # # 左侧搜索范围
-            # left_search_min = max(prompt_len, start - math.ceil(delta / 2))
-            # left = start
-            # n_hit_wall = 0
-            # for pos in range(start - 1, left_search_min - 1, -1):
-            #     if x[0, pos] != self.mask_id:
-            #         n_hit_wall += 1
-            #         if n_hit_wall > self.exploration_M:
-            #             break
-            #     else:
-            #         n_hit_wall = 0
-            #         left = pos
-            # # 右侧搜索范围
-            # rest_delta = delta - (start - left)
-            # right_search_max = min(x.shape[1] - 1, end + rest_delta)
-            # right = end
-            # n_hit_wall = 0
-            # for pos in range(end + 1, right_search_max + 1):
-            #     if x[0, pos] != self.mask_id:
-            #         n_hit_wall += 1
-            #         if n_hit_wall > self.exploration_M:
-            #             break
-            #     else:
-            #         n_hit_wall = 0
-            #         right = pos
-            # # 补左搜索(左扩已==delta/2，右扩<delta/2<=rest_delta，剩余格再分配到左)
-            # rest_delta = rest_delta - (right - end)
-            # left_search_min = max(prompt_len, left - rest_delta)
-            # n_hit_wall = 0
-            # for pos in range(left - 1, left_search_min - 1, -1):
-            #     if x[0, pos] != self.mask_id:
-            #         n_hit_wall += 1
-            #         if n_hit_wall > self.exploration_M:
-            #             break
-            #     else:
-            #         n_hit_wall = 0
-            #         left = pos
-            # density_expansion_intervals.append((left, right))
         memory_intervals = self._merge_intervals(density_expansion_intervals)
 
         # 2. interval purification: rule out intervals such that have been fully demasked during exploration steps
@@ -358,7 +325,7 @@ class MRSampler(BaseSampler):
                 purified_intervals.append((start, end))
         memory_intervals = purified_intervals
 
-        print(f"边界扩张+区间净化后形成区间: {memory_intervals}")
+        print(f"===== constructed decoding zones: {memory_intervals}")
         history_intervals.append([(start - prompt_len, end - prompt_len) for start, end in memory_intervals])    # for visualization
 
         return x, memory_intervals, steps_used, outputs, confidences, transfer_idxs, history_intervals
@@ -404,28 +371,12 @@ class MRSampler(BaseSampler):
             if n_active_intervals == 0:
                 break
 
-            # 执行一次forward并行更新
-            x0, confidence, org_confidence = self._model_forward(x, prompt_index)
+            x0, confidence, org_confidence, _ = self._model_forward(x, prompt_index)
             current_step += 1
             steps_used += 1
             GG = False
 
-            # semi support
-            # confidence[~block_mask] = -np.inf
-            confidence[:, 0: self.block_start] = confidence[:, self.block_end:] = -np.inf
-
-            # mutiplying positional weights
-            # if self.positional_weights_type == 'absolute':
-            #     confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.absolute_positional_weights[current_step]
-            # elif self.positional_weights_type == 'ratio':
-            #     unmasked_ratio = (x[:, self.block_start: self.block_end] != self.mask_id).sum().item() / self.block_length
-            #     dynamic_positional_weights = self.compute_dynamic_positional_weights(gen_length, unmasked_ratio, device=x0.device)
-            #     confidence[:, prompt_len:] = confidence[:, prompt_len:] * dynamic_positional_weights
-            # elif self.positional_weights_type == 'static':
-            #     confidence[:, prompt_len:] = confidence[:, prompt_len:] * self.static_positional_weights[current_step]
-            # else:
-            #     pass
-
+            confidence[:, 0: self.block_start] = confidence[:, self.block_end:] = -np.inf   # semi support
             confidence_in_active_zones = torch.where(dynamic_accel_mask, confidence, -np.inf)
 
             transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
@@ -468,28 +419,10 @@ class MRSampler(BaseSampler):
                     pass
                 elif self.acceleration_parallel_method == 'margin':
                     pass
+
                 n_para_updated = para_transfer_index.sum().item()
-                # 更新策略2[保底，暂时取消]: 若区间内元素不达解码阈值但仍高于最低阈值(可以直接是探索区间的阈值), 则进行top-k保守(conservative)更新
-                # n_cons_updated = 0
-                # cons_transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-                # cons_min_k = max(1, self.exp_N // n_active_intervals)
-                # if n_para_updated < cons_min_k:
-                #     confidence_for_topk = confidence_in_curr_zone.clone()
-                #     # 排除已经为True的位置
-                #     if n_para_updated > 0:
-                #         confidence_for_topk[para_transfer_index] = -np.inf
-                #     _, topk_index = torch.topk(confidence_for_topk, dim=1, k=cons_min_k - n_para_updated)
-                #     # 最低置信度检测
-                #     cons_mask = confidence_for_topk.gather(dim=1, index=topk_index) > self.acceleration_low_threshold
-                #     cons_index = topk_index[cons_mask].unsqueeze(0)  # topk_index[topk_mask]会将结果自动降维
-                #     n_cons_updated = cons_mask.sum().item()
-                #     # 增加填充位置
-                #     cons_transfer_index.scatter_(dim=1, index=cons_index, value=True)
-                # 为transfer_index增加当前区间的更新信息
                 transfer_index |= para_transfer_index
                 total_n_para_updated += n_para_updated
-                # transfer_index |= cons_transfer_index
-                # total_n_updated += n_cons_updated
 
             total_n_updated = total_n_para_updated + total_n_cons_updated
             if total_n_updated > 0:
@@ -513,7 +446,7 @@ class MRSampler(BaseSampler):
             confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
             transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
 
-            # 单轮更新数低于设置阈值，提前退出加速阶段
+            # exit when its speed <= that in Divide phase
             if total_n_updated < self.exp_N:
                 break
 
@@ -534,7 +467,7 @@ class MRSampler(BaseSampler):
         """
 
         todo_steps = math.ceil((x[:, self.block_start: self.block_end] == self.mask_id).sum(dim=1).item() / self.mopup_speed)
-        todo_steps = min(todo_steps, self.block_steps - block_step_i)
+        # todo_steps = min(todo_steps, self.block_steps - block_step_i)
 
         outputs = []
         confidences = []
@@ -546,28 +479,42 @@ class MRSampler(BaseSampler):
             return x, steps_used, outputs, confidences, transfer_idxs
 
         prompt_len = prompt_index[0].sum().item()
-        mask_index = (x == self.mask_id)
-        mask_index[~block_mask] = False     #semi-ar support
-        num_transfer_tokens = get_num_transfer_tokens(mask_index, todo_steps)  # (b, todo_steps)
 
         for i in range(todo_steps):
-            x0, confidence, org_confidence = self._model_forward(x, prompt_index)
+            x0, confidence, org_confidence, logits = self._model_forward(x, prompt_index)
             steps_used += 1
 
-            confidence[~block_mask] = -np.inf   #semi support
-
-            _, topk_idxs = torch.topk(confidence, k=num_transfer_tokens[0, i], dim=1)  # (b, l)
-
-            transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-            transfer_index.scatter_(dim=1, index=topk_idxs, value=True)
+            top2_logits = torch.topk(logits, k=2, dim=-1).values  # (b, l, 2)
+            top2_margins = top2_logits[..., 0] - top2_logits[..., 1]  # (b, l)
+            top2_margins[:, 0: self.block_start] = top2_margins[:, self.block_end:] = 0  # semi support
+            top2_margins[x != self.mask_id] = 0
+            transfer_index_margin = (top2_margins > self.mopup_margin_threshold)
+            # ---
+            # block_top2_margins = top2_margins[:, self.block_start: self.block_end]
+            # block_top2_margins_avg = block_top2_margins.mean().item()
+            # print(f"block_top2_margins_avg: {block_top2_margins_avg:.2f}, std: {block_top2_margins.std().item():.2f}")
+            # ---
+            n_margin_updated = transfer_index_margin.sum().item()
+            n_topk_updated = 0
+            if n_margin_updated > 0:
+                transfer_index = transfer_index_margin
+            else:
+                confidence[~block_mask] = -np.inf   #semi support
+                # _, topk_idxs = torch.topk(confidence, k=num_transfer_tokens[0, i], dim=1)  # (b, l)
+                _, topk_idxs = torch.topk(confidence, k=self.mopup_speed, dim=1)  # (b, l)
+                transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+                transfer_index.scatter_(dim=1, index=topk_idxs, value=True)
+                n_topk_updated = transfer_index.sum().item()
             x[transfer_index] = x0[transfer_index]
 
-            print(f"curr_step {current_step + i + 1} [Mop-up]: n_transferred({transfer_index.sum().item()})")
-            # x.scatter_(dim=1, index=topk_idxs, src=x0) scatter天坑！理由见exploration中的scatter使用
+            print(f"curr_step {current_step + i + 1} [Mop-up]: n_updated({transfer_index.sum().item()}) = n_margin_updated({n_margin_updated}) + n_topk_updated({n_topk_updated})")
 
             outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
             confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
             transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
+
+            if (x[:, self.block_start: self.block_end] == self.mask_id).sum().item() == 0:
+                break
 
         return x, steps_used, outputs, confidences, transfer_idxs
 
@@ -602,11 +549,11 @@ class MRSampler(BaseSampler):
         # initalize positional weights
         if self.positional_weights_type == 'absolute':
             self.absolute_positional_weights = self.precompute_absolute_positional_weights(
-                max_steps=max_steps, gen_length=gen_length, device=self.model.device, dtype=torch.float32
+                max_steps=max_steps, gen_length=block_length, device=self.model.device, dtype=torch.float32
             )
         elif self.positional_weights_type == 'static':
             self.static_positional_weights = self.precompute_static_positional_weights(
-                gen_length=gen_length, device=self.model.device, dtype=torch.float32
+                gen_length=block_length, device=self.model.device, dtype=torch.float32
             )
         elif self.positional_weights_type == 'ratio':
             pass
@@ -632,6 +579,7 @@ class MRSampler(BaseSampler):
         for num_block in range(num_blocks):
             self.block_start = prompt_len + num_block * block_length
             self.block_end = prompt_len + (num_block + 1) * block_length
+            self.num_block = num_block
 
             block_mask = torch.ones((1, prompt_len + gen_length), dtype=torch.bool).to(self.device)
             block_mask[:, prompt_len + (num_block + 1) * block_length:] = 0
@@ -688,6 +636,8 @@ class MRSampler(BaseSampler):
                     block_step_i += acceleration_steps
                     accumulated_steps += acceleration_steps
                     # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Acceleration")
+                else:
+                    break
 
             # ③ Finalize
             # TODO: 根据当前自信度(第1和第2答案的logits均值)，决定进入收尾还是直接commit答案
@@ -741,7 +691,7 @@ class MRSampler(BaseSampler):
 
 def main():
     set_seed(1234)
-    device = 'cuda:0'
+    device = 'cuda:2'
     model_path = "../models/LLaDA-8B-Instruct"
 
     # 4-shot prompt
@@ -750,12 +700,12 @@ def main():
     #     prompts= f.readlines()[0:3]
 
     # base gsm8k prompt
-    # gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    # prompts = gsm8k_dataset['test']['question'][0:2]
+    gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
+    prompts = gsm8k_dataset['test']['question'][0:3]
 
     # base humaneval prompt
-    humaneval_dataset = load_dataset('openai/openai_humaneval')
-    prompts = humaneval_dataset['test']['prompt'][:5]
+    # humaneval_dataset = load_dataset('openai/openai_humaneval')
+    # prompts = humaneval_dataset['test']['prompt'][:5]
 
     # prompts = [
     #     "你知道周杰伦吗",
@@ -767,17 +717,18 @@ def main():
         cfg_scale=0.0,
         temperature=0.0,
         max_exploration_steps=10,
-        exploration_N=1,
+        exploration_N=3,
         exploration_M=2,
         exploration_threshold=0.25,
         acceleration_parallel_method='fixed',
         acceleration_threshold=0.9,
         acceleration_low_threshold=0.6,
         acceleration_factor=1,
-        max_mopup_steps=10,
-        mopup_gate_ratio=0.80,
-        mopup_speed=2,
-        positional_weights_type='none',
+        mopup_gate_ratio=0.85,
+        mopup_margin_threshold=3.0,
+        max_mopup_steps=30,
+        mopup_speed=1,
+        positional_weights_type='ratio',
         max_weight=1.0,
         initial_min_weight=0.0,
     )
@@ -796,9 +747,10 @@ def main():
         print('=' * 20 + f" Generating prompt_idx: {i} " + "=" * 20)
         tokenizer = sampler.tokenizer
 
-        m = [{"role": "user", "content": prompt_text}]
-        prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
-        input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
+        # m = [{"role": "user", "content": prompt_text}]
+        # prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
+        # input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
+        input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
 
         # exploration_thresholds = [0.15, 0.25, 0.4] # -> 0.25 is good for 'fixed', 'factor'
         exploration_thresholds = [0.25]
