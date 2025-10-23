@@ -20,10 +20,10 @@ MASTER_PORT=8086
 #N_LIMIT=6
 
 # humaneval don't have fewshot
-#TASKS="humaneval"
+TASKS="humaneval"
 
 # MBPP has a default(maximum) fewshot number of 3
-TASKS="mbpp"
+#TASKS="mbpp"
  
 # math-500 is a dataset on huggingface
 #TASKS="math-500"
@@ -57,9 +57,9 @@ do
   echo "========================== evaluating SL=${SL} =========================="
   GEN_LENGTH=$SL
   STEPS=$SL
-  BLOCK_LENGTH=$SL
+  BLOCK_LENGTH=128
 
-  OUTPUT_DIR="eval/outputs/${MODEL_NAME}_pure_baseline_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}"
+  OUTPUT_DIR="eval/outputs/${MODEL_NAME}_pure_baseline_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}_BL${BLOCK_LENGTH}"
   rm -rf $OUTPUT_DIR
   mkdir -p $OUTPUT_DIR
 
@@ -113,4 +113,4 @@ do
         > "${OUTPUT_DIR}/log.txt" 2>&1
 done
 # only in autodl
-/usr/bin/shutdown
+#/usr/bin/shutdown

@@ -146,6 +146,7 @@ class MRSampler(BaseSampler):
 
             if not GG:
                 # soft-NMS式选seed点
+                print(f"NO GG! select_N: {select_N}")
                 seed_indices = [[] for _ in range(conf_temp.shape[0])]
                 for b in range(conf_temp.shape[0]):
                     conf_b = conf_temp[b].clone()
@@ -540,7 +541,7 @@ class MRSampler(BaseSampler):
         transfer_idxs = []
         steps_used = 0
 
-        if todo_steps == 0:
+        if todo_steps <= 0:
             # print("Mopup phase: all tokens decoded, skip mop_up phase.")
             return x, steps_used, outputs, confidences, transfer_idxs
 
@@ -668,27 +669,28 @@ class MRSampler(BaseSampler):
                 accumulated_steps += exploration_steps
 
                 # ② Conquer
-                x, acceleration_steps, outputs_acceleration, confidences_acceleration, transfer_idxs_acceleration \
-                    = self.acceleration_phase(
-                        x,
-                        prompt_index,
-                        block_mask=block_mask,
-                        intervals=intervals,
-                        current_step=accumulated_steps,
-                )
+                if intervals:
+                    x, acceleration_steps, outputs_acceleration, confidences_acceleration, transfer_idxs_acceleration \
+                        = self.acceleration_phase(
+                            x,
+                            prompt_index,
+                            block_mask=block_mask,
+                            intervals=intervals,
+                            current_step=accumulated_steps,
+                    )
 
-                # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Acceleration")
-                outputs.extend(outputs_acceleration)
-                confidences.extend(confidences_acceleration)
-                transfer_idxs.extend(transfer_idxs_acceleration)
-                phase_states.append(
-                    {'phase': 'acceleration', 'range': (accumulated_steps, accumulated_steps + acceleration_steps)})
-                block_step_i += acceleration_steps
-                accumulated_steps += acceleration_steps
-                # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Acceleration")
-                # TODO: 根据当前自信度(第1和第2答案的logits均值)，决定进入收尾还是直接commit答案
+                    # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Acceleration")
+                    outputs.extend(outputs_acceleration)
+                    confidences.extend(confidences_acceleration)
+                    transfer_idxs.extend(transfer_idxs_acceleration)
+                    phase_states.append(
+                        {'phase': 'acceleration', 'range': (accumulated_steps, accumulated_steps + acceleration_steps)})
+                    block_step_i += acceleration_steps
+                    accumulated_steps += acceleration_steps
+                    # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Acceleration")
 
             # ③ Finalize
+            # TODO: 根据当前自信度(第1和第2答案的logits均值)，决定进入收尾还是直接commit答案
             # print("\n--- 进入收尾阶段 ---")
             x, mopup_steps, outputs_mopup, confidences_mopup, transfer_idxs_mopup \
                 = self.mop_up_phase(
@@ -747,9 +749,13 @@ def main():
     # with open(few_shot_filename, "r", encoding="utf-8") as f:
     #     prompts= f.readlines()[0:3]
 
-    # base prompt
-    gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    prompts = gsm8k_dataset['test']['question'][2:3]
+    # base gsm8k prompt
+    # gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
+    # prompts = gsm8k_dataset['test']['question'][0:2]
+
+    # base humaneval prompt
+    humaneval_dataset = load_dataset('openai/openai_humaneval')
+    prompts = humaneval_dataset['test']['prompt'][:5]
 
     # prompts = [
     #     "你知道周杰伦吗",
@@ -761,7 +767,7 @@ def main():
         cfg_scale=0.0,
         temperature=0.0,
         max_exploration_steps=10,
-        exploration_N=6,
+        exploration_N=1,
         exploration_M=2,
         exploration_threshold=0.15,
         acceleration_parallel_method='fixed',
@@ -769,11 +775,11 @@ def main():
         acceleration_low_threshold=0.6,
         acceleration_factor=1,
         max_mopup_steps=10,
-        mopup_gate_ratio=0.85,
+        mopup_gate_ratio=0.80,
         mopup_speed=2,
         positional_weights_type='none',
         max_weight=1.0,
-        initial_min_weight=0.1,
+        initial_min_weight=0.0,
     )
 
     sampler = MRSampler.from_path(
@@ -785,7 +791,7 @@ def main():
 
 
     max_steps = 256
-    block_length = 256
+    block_length = 64
     for i, prompt_text in enumerate(prompts):
         print('=' * 20 + f" Generating prompt_idx: {i} " + "=" * 20)
         tokenizer = sampler.tokenizer
@@ -795,7 +801,7 @@ def main():
         input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
 
         # exploration_thresholds = [0.15, 0.25, 0.4] # -> 0.25 is good for 'fixed', 'factor'
-        exploration_thresholds = [0.2]
+        exploration_thresholds = [0.25]
         for exp_tr in exploration_thresholds:
             sampler.exploration_threshold = exp_tr
             print('=' * 20 + f" exploration_threshold: {exp_tr} " + "=" * 20)

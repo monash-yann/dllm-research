@@ -20,15 +20,16 @@ MASTER_PORT=8086
 #N_LIMIT=6
 
 # humaneval don't have fewshot
-#TASKS="humaneval"
+TASKS="humaneval"
+N_LIMIT=2
 
 # MBPP has a default(maximum) fewshot number of 3
 #TASKS="mbpp"
  
 # math-500 is a dataset on huggingface
-TASKS="math-500"
-INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/math-500/"
-N_LIMIT=4
+#TASKS="math-500"
+#INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/math-500/"
+#N_LIMIT=4
 
 # 为了快速测试，限制评估的样本数量 (正式评估时请注释掉此行)
 #N_LIMIT=2
@@ -59,9 +60,9 @@ do
   echo "========================== evaluating SL=${SL} =========================="
   GEN_LENGTH=$SL
   STEPS=$SL
-  BLOCK_LENGTH=$SL
+  BLOCK_LENGTH=32
 
-  OUTPUT_DIR="eval/outputs/${MODEL_NAME}_pure_MTD${DECODING_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}"
+  OUTPUT_DIR="eval/outputs/${MODEL_NAME}_pure_MTD${DECODING_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}_BL${BLOCK_LENGTH}"
   rm -rf $OUTPUT_DIR
   mkdir -p $OUTPUT_DIR
 

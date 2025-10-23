@@ -20,11 +20,11 @@ MASTER_PORT=8086
 
 #TASKS="mbpp"
 
-#TASKS="humaneval"
+TASKS="humaneval"
 
 # math-500 is a dataset on huggingface
-TASKS="math-500"
-INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/math-500/"
+#TASKS="math-500"
+#INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/math-500/"
 #N_LIMIT=2
 
 GPU_LIST=$(IFS=,; echo "${GPU_IDS[*]}")

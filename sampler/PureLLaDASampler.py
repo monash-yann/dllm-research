@@ -197,7 +197,7 @@ class PureLLaDASampler(BaseSampler):
                 transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
 
                 if (x[:, prompt_len + num_block * block_length: prompt_len + (num_block+1) * block_length] == self.mask_id).sum().item() == 0:
-                    print(f"block {num_block} is decoded over in step {i}.")
+                    print(f"block {num_block} is decoded over in block_step_i={i}.")
                     break
 
         # compute metrics
