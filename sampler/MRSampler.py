@@ -769,7 +769,7 @@ def main():
         max_exploration_steps=10,
         exploration_N=1,
         exploration_M=2,
-        exploration_threshold=0.15,
+        exploration_threshold=0.25,
         acceleration_parallel_method='fixed',
         acceleration_threshold=0.9,
         acceleration_low_threshold=0.6,

@@ -14,6 +14,7 @@ MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 GPU_IDS=(0 1 2 3)
 MASTER_PORT=8086
 
+#N_LIMIT=44
 NUM_FEWSHOT=0
 
 # gsm8k NUM_FEWSHOT should be 4
@@ -21,11 +22,14 @@ NUM_FEWSHOT=0
 
 #TASKS="humaneval"
 
-TASKS="mbpp"
+#TASKS="mbpp"
+
+TASKS="math-500"
+INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/math-500/"
+
 
 GPU_LIST=$(IFS=,; echo "${GPU_IDS[*]}")
 NUM_GPUS=${#GPU_IDS[@]}
-
 
 # evaluation parameters
 BATCH_SIZE=1
@@ -41,7 +45,7 @@ DECODING_METHOD="topk"
 
 MODEL_NAME=$(basename "$MODEL_PATH")
 
-SL_VALUES=(128)
+SL_VALUES=(256)
 ks=(1 2 3 4 5 6)
 
 for SL in "${SL_VALUES[@]}"
@@ -50,8 +54,6 @@ do
   GEN_LENGTH=$SL
   STEPS=$SL
   BLOCK_LENGTH=$SL
-
-
 
   for k in "${ks[@]}"; do
     if [ "$DECODING_METHOD" == "topk" ]; then
@@ -97,6 +99,7 @@ do
             --model eval_sampler \
             --confirm_run_unsafe_code \
             --tasks $TASKS \
+            ${INCLUDE_PATH:+--include_path $INCLUDE_PATH} \
             ${NUM_FEWSHOT:+--num_fewshot $NUM_FEWSHOT}\
             --batch_size $BATCH_SIZE \
             --model_args $MODEL_ARGS \
