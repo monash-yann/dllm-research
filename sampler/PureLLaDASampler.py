@@ -22,6 +22,8 @@ class PureLLaDASamplerConfig(SamplerConfig):
     remasking: Literal["random", "low_confidence"] = "low_confidence"
     decoding_method: Literal["topk", "factor", "fixed"] = "topk"
     k:int = -1
+    factor:float = 1.0
+    confidence_threshold:float = 0.9
 
 
 class PureLLaDASampler(BaseSampler):
@@ -90,7 +92,7 @@ class PureLLaDASampler(BaseSampler):
         assert max_steps % num_blocks == 0
         block_steps = max_steps // num_blocks
 
-        print(f"decoding method: {self.decoding_method}, user_k: {self.k}.")
+        print(f"decoding method: {self.decoding_method}, k={self.k}, factor={self.factor}, confidence_threshold={self.confidence_threshold}.")
         for num_block in range(num_blocks):
                     # block_mask_index = (x[:, prompt_len + num_block * block_length: prompt_len + (
                     #     num_block + 1) * block_length:] == self.mask_id)
@@ -160,7 +162,7 @@ class PureLLaDASampler(BaseSampler):
                             cand_confs = cand_confs[sorted_order]
                             # 2. 从cand_confs最低conf处开始挨个试验可行的n，直到满足条件;
                             for conf_idx, conf in reversed(list(enumerate(cand_confs.tolist()))):
-                                para_feasible_n = int(1 / (1 - conf + 1e-6) - 1)
+                                para_feasible_n = int(self.factor / (1 - conf + 1e-6) - 1)
                                 #  3. 若满足公式，则根据这些满足条件的index形成transfer_inedx
                                 if para_feasible_n >= conf_idx + 1:
                                     transfer_index.scatter_(dim=1, index=cand_idxs[:conf_idx + 1].unsqueeze(0),
@@ -179,7 +181,7 @@ class PureLLaDASampler(BaseSampler):
                             transfer_index[b, select_index] = True
                             # print(f"select_index: {select_index.cpu().numpy()}.")
                     elif self.decoding_method == 'fixed':
-                        transfer_index = confidence > 0.9   # maximum setting by fast-dllm
+                        transfer_index = confidence > self.confidence_threshold   # maximum setting by fast-dllm
                     else:
                         pass
                     # top-1兜底
@@ -249,7 +251,6 @@ def main():
     gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
     prompts = gsm8k_dataset['test']['question'][0:3]
 
-    # --- 使用类进行生成 ---
     config = PureLLaDASamplerConfig(
         cfg_scale=0.0,
         temperature=0.0,
@@ -258,11 +259,13 @@ def main():
         initial_min_weight=0.0,
         remasking="low_confidence",
         decoding_method="fixed",
-        k=2
+        k=2,
+        confidence_threshold=0.9,
+        factor=1,
     )
 
     max_gen_steps = 128
-    block_length = 128
+    block_length = 64
     sampler = PureLLaDASampler.from_path(
         model_path=model_path,
         device=device,

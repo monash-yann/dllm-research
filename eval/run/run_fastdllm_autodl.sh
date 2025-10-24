@@ -11,16 +11,16 @@ PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
 MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 
 # available gpus
-GPU_IDS=(0 1 2 3)
+GPU_IDS=(0 1 2 3 4 5)
 MASTER_PORT=8086
 
-#TASKS="gsm8k"
-#NUM_FEWSHOT=4
+TASKS="gsm8k"
+NUM_FEWSHOT=4
 #N_LIMIT=6
 
 #TASKS="mbpp"
 
-TASKS="humaneval"
+#TASKS="humaneval"
 
 # math-500 is a dataset on huggingface
 #TASKS="math-500"
@@ -41,13 +41,15 @@ POSITIONAL_WEIGHTS_TYPE='none'
 MAX_WEIGHT=1.0
 INITIAL_MIN_WEIGHT=0.0
 REMASKING="low_confidence"
-DECODING_METHOD="fixed"
+DECODING_METHOD="factor"
+FACTOR=1.0
+CONFIDENCE_THRESHOLD=0.95
 
 MODEL_NAME=$(basename "$MODEL_PATH")
 
 SL_VALUES=(256)
 
-BLOCK_LENGTH=128
+BLOCK_LENGTH=64
 
 for SL in "${SL_VALUES[@]}"
 do
@@ -76,6 +78,8 @@ do
   MODEL_ARGS+=",block_length=$BLOCK_LENGTH"
   MODEL_ARGS+=",remasking=$REMASKING"
   MODEL_ARGS+=",decoding_method=$DECODING_METHOD"
+  MODEL_ARGS+=",factor=$FACTOR"
+  MODEL_ARGS+=",confidence_threshold=$CONFIDENCE_THRESHOLD"
 
 
   echo "================================================="

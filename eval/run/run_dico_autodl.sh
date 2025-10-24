@@ -11,12 +11,11 @@ PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
 MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 
 # available gpus
-GPU_IDS=(0 1 2 3 4 5 6)
+GPU_IDS=(0 1 2 3 4 5)
 MASTER_PORT=8086
 
 TASKS="gsm8k"
 NUM_FEWSHOT=4
-#N_LIMIT=6
 
 #TASKS="mbpp"
 
@@ -32,27 +31,28 @@ NUM_GPUS=${#GPU_IDS[@]}
 # evaluation parameters
 BATCH_SIZE=1
 MC_NUM=128
-#NUM_FEWSHOT=
+
 # sampler parameters
 CFG_SCALE=0.0
 TEMPERATURE=0.0
 MAX_EXPLORATION_STEPS=10
-EXPLORATION_N_VALUES=(2 1 3)
+#EXPLORATION_N_VALUES=(2 1 3)
+EXPLORATION_N_VALUES=(2 3)
 #EXPLORATION_N_VALUES=(7)
 EXPLORATION_M=2
-EXPLORATION_THRESHOLD=0.25
+EXPLORATION_THRESHOLD=0.1
 ACCELERATION_PARALLEL_METHOD='fixed'
 ACCELERATION_FACTOR=1
-ACCELERATION_THRESHOLD=0.8
+ACCELERATION_THRESHOLD=0.9
 ACCELERATION_LOW_THRESHOLD=0.6
-MOPUP_GATE_RATIO=0.85
-MOPUP_MARGIN_THRESHOLD=3
+MOPUP_GATE_RATIO=0.8
+MOPUP_MARGIN_THRESHOLD=3.0
 MAX_MOPUP_STEPS=12
-MOPUP_SPEED=1
+MOPUP_SPEED=2
 
 POSITIONAL_WEIGHTS_TYPE='ratio'
 MAX_WEIGHT=1.0
-INITIAL_MIN_WEIGHT=0.0
+INITIAL_MIN_WEIGHT=0.05
 
 MODEL_NAME=$(basename "$MODEL_PATH")
 
@@ -73,8 +73,6 @@ do
     rm -rf $OUTPUT_DIR
     mkdir -p $OUTPUT_DIR
 
-    # --- 构造 --model_args 字符串 (关键改动) ---
-    # lm-eval 要求所有自定义模型参数通过一个逗号分隔的字符串传入
     MODEL_ARGS="model_path=$MODEL_PATH"
     MODEL_ARGS+=",mc_num=$MC_NUM"
     MODEL_ARGS+=",gen_length=$GEN_LENGTH"
@@ -100,7 +98,6 @@ do
     MODEL_ARGS+=",max_weight=$MAX_WEIGHT"
     MODEL_ARGS+=",initial_min_weight=$INITIAL_MIN_WEIGHT"
 
-
     echo "================================================="
     echo "Project Root: $PROJECT_ROOT"
     echo "Using GPUs: $GPU_LIST (Total: $NUM_GPUS)"
@@ -110,7 +107,6 @@ do
     echo "Output Dir: $OUTPUT_DIR"
     echo "================================================="
 
-    # --- 启动评估 (关键改动) ---
     cd "$PROJECT_ROOT" || exit
 
     #    --ddp_backend nccl \: ddp mode set by running accelerate config instead of argument

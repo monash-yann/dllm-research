@@ -333,6 +333,8 @@ class BaseEvalHarness(LM):
         metrics_fpath = os.path.join(self.output_dir, "overall_metrics.json")
         with open(metrics_fpath, 'w', encoding='utf-8') as f:
             json.dump(metrics_report, f, indent=4, ensure_ascii=False)
+        print("[Info] Computed summary metrics")
+        print(summary_metrics)
 
 if __name__ == "__main__":
     set_seed(1234)

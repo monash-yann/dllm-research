@@ -151,6 +151,7 @@ class BaseSampler:
 
         # compute min_weight based on unmasked_ratio
         min_weight = min(1.0, initial_min_weight + ur_factor * unmasked_ratio)
+        assert min_weight > 0
         # print(f"current unmasked_ratio: {unmasked_ratio:.2f}, min_weight: {min_weight:.2f}")
         lambda_decay = - torch.log(torch.tensor(min_weight)) / (gen_length - 1)
         # compute ratio_positional_weights
