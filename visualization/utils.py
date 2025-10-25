@@ -139,8 +139,8 @@ def visualize_overall_steps(folder_path:str, OUT:tuple[list, list, list], index:
                     fontweight='bold'
                 )
         # 绘制探索阶段中每个step确定的区间
-        if 'exploration_intervals' in phase_records:
-            for interval_data in phase_records['exploration_intervals']:
+        if 'history_intervals_all' in phase_records:
+            for interval_data in phase_records['history_intervals_all']:
                 inceptive_step = interval_data['inceptive_step']
                 # 遍历每行的区间
                 for idx, step_intervals in enumerate(interval_data['history_intervals']):

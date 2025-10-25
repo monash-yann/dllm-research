@@ -59,7 +59,7 @@ def run_gen_until(
         out = OUT.out
         outputs = OUT.outputs
         phase_states = OUT.phase_states
-        exploration_intervals = OUT.exploration_intervals
+        history_intervals_all = OUT.history_intervals_all
         confidences = OUT.confidences
         transfer_idxs = OUT.transfer_idxs
         metrics = OUT.metrics
@@ -73,10 +73,10 @@ def run_gen_until(
         outputs_decoded = decode_outputs(outputs, tokenizer)
         # 可视化阶段信息准备
         phase_records = None
-        if phase_states is not None and exploration_intervals is not None:
+        if phase_states is not None and history_intervals_all is not None:
             phase_records = {
                 'phase_states': phase_states,
-                'exploration_intervals': exploration_intervals,
+                'history_intervals_all': history_intervals_all,
             }
         n_prompt_tokens = input_ids.shape[1]
 
@@ -180,7 +180,7 @@ def run_gen_until(
 
 def visualize_MR():
     print(f"visualizing MR Sampler, current path: {os.path.abspath(__file__)}")
-    device = 'cuda:2'
+    device = 'cuda:1'
 
     # 提示词替换，与4-shot的行为保持一致
     # few_shot_filename = "../prompts/gsm8k_shot.txt"
@@ -192,7 +192,7 @@ def visualize_MR():
     #         gsm8k_prompts.append(corrected_line)
 
     gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    gsm8k_prompts = gsm8k_dataset['test']['question'][:5]
+    gsm8k_prompts = gsm8k_dataset['test']['question'][:3]
 
     humaneval_dataset = load_dataset('openai/openai_humaneval')
     humaneval_prompts = humaneval_dataset['test']['prompt'][:5]
@@ -203,20 +203,21 @@ def visualize_MR():
         cfg_scale=0.0,
         temperature=0.0,
         max_exploration_steps=10,
-        exploration_N=2,
+        exploration_N=3,
         exploration_M=2,
-        exploration_threshold=0.25,
-        acceleration_parallel_method='fixed',
+        exploration_threshold=0.1,
+        acceleration_parallel_method='factor',
         acceleration_threshold=0.9,
         acceleration_low_threshold=0.6,
         acceleration_factor=1,
-        max_mopup_steps=10,
-        mopup_margin_threshold=5,
-        mopup_gate_ratio=0.85,
-        mopup_speed=1,
+        mopup_gate_ratio=0.75,
+        mopup_margin_threshold=3.0,
+        max_mopup_steps=30,
+        mopup_speed=2,
         positional_weights_type='ratio',
         max_weight=1.0,
-        initial_min_weight=0.0,
+        initial_min_weight=0.05,
+        ur_factor=1.0
     )
 
     sampler = MRSampler.from_path(
@@ -227,21 +228,24 @@ def visualize_MR():
     )
 
     # exploration_thresholds = [0.2, 0.25]  -> No Positionals Weights下, 0.25表现最好
-    exploration_thresholds = [0.25]
 
     gen_length = 256
-    block_length = 64
-    output_dir = f"imgs/dico+margin_mopup/gsm8k_SL{gen_length}_BL{block_length}/N{sampler.exploration_N}E{sampler.max_exploration_steps}_APM{sampler.acceleration_parallel_method}_PWT{sampler.positional_weights_type}_imw${sampler.initial_min_weight}"
-    run_gen_until(
-        sampler=sampler,
-        prompts=gsm8k_prompts,
-        max_steps=gen_length,
-        gen_length=gen_length,
-        block_length=block_length,
-        output_dir=output_dir,
-        device=device,
-        console_show=False, file_save=True, vis_overall=True, vis_attn_map=False
-    )
+    block_lengthes = [256, 128, 64]
+    exploration_thresholds = [0.15, 0.25]
+    for block_length in block_lengthes:
+        for exp_tr in exploration_thresholds:
+            sampler.exploration_threshold = exp_tr
+            output_dir = f"imgs/dico+p3_APM{sampler.acceleration_parallel_method}_PWT{sampler.positional_weights_type}_imw${sampler.initial_min_weight}/gsm8k_SL{gen_length}_BL{block_length}/N{sampler.exploration_N}_exptr{exp_tr}/"
+            run_gen_until(
+                sampler=sampler,
+                prompts=gsm8k_prompts,
+                max_steps=gen_length,
+                gen_length=gen_length,
+                block_length=block_length,
+                output_dir=output_dir,
+                device=device,
+                console_show=False, file_save=True, vis_overall=True, vis_attn_map=False
+            )
 
 
 def visualize_pure_llada():

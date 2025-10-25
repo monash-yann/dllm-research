@@ -46,8 +46,7 @@ def process_docs(dataset: datasets.Dataset) -> datasets.Dataset:
     return dataset.map(_process_doc)
 
 
-def
-    () -> list[dict]:
+def list_fewshot_samples() -> list[dict]:
     return [
         {
             "problem": "Find the domain of the expression  $\\frac{\\sqrt{x-2}}{\\sqrt{5-x}}$.}",

@@ -165,8 +165,7 @@ class PureLLaDASampler(BaseSampler):
                                 para_feasible_n = int(self.factor / (1 - conf + 1e-6) - 1)
                                 #  3. 若满足公式，则根据这些满足条件的index形成transfer_inedx
                                 if para_feasible_n >= conf_idx + 1:
-                                    transfer_index.scatter_(dim=1, index=cand_idxs[:conf_idx + 1].unsqueeze(0),
-                                                            value=True)
+                                    transfer_index.scatter_(dim=1, index=cand_idxs[:conf_idx + 1].unsqueeze(0), value=True)
                                     break
                     elif self.decoding_method == 'topk':  # default topk
                         if self.k:

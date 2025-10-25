@@ -30,7 +30,8 @@ class SamplerConfig:
     # Positional weight config
     positional_weights_type: Literal['absolute', 'ratio', 'static', 'none'] = 'none'
     max_weight: float = 1.0
-    initial_min_weight: float = 0.1
+    initial_min_weight: float = 0.05
+    ur_factor: float = 1.2
 
 @dataclass
 class GenerationMetrics:
@@ -50,7 +51,7 @@ class GenerateOutput:
     confidences: List[np.ndarray] = field(default_factory=list)
     transfer_idxs: List[np.ndarray] = field(default_factory=list)
     phase_states: List= field(default_factory=list)
-    exploration_intervals: List = field(default_factory=list)
+    history_intervals_all: List = field(default_factory=list)
 
 
 class BaseSampler:
@@ -134,7 +135,6 @@ class BaseSampler:
         self,
         gen_length: int,
         unmasked_ratio: float,
-        ur_factor: float = 1.0, 
         device: torch.device = 'cuda',
         dtype: torch.dtype = torch.float32
     ) -> torch.Tensor:
@@ -150,7 +150,7 @@ class BaseSampler:
         positions = torch.arange(gen_length, device=device, dtype=dtype)  # (gen_length, )
 
         # compute min_weight based on unmasked_ratio
-        min_weight = min(1.0, initial_min_weight + ur_factor * unmasked_ratio)
+        min_weight = min(1.0, initial_min_weight + self.ur_factor * unmasked_ratio)
         assert min_weight > 0
         # print(f"current unmasked_ratio: {unmasked_ratio:.2f}, min_weight: {min_weight:.2f}")
         lambda_decay = - torch.log(torch.tensor(min_weight)) / (gen_length - 1)

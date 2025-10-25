@@ -52,7 +52,7 @@ class BaseEvalHarness(LM):
     ):
         super().__init__()
 
-        # 设置多gpu框架
+        # initalize accelerator for multi-gpu evaluation
         accelerator = accelerate.Accelerator()
         if accelerator.num_processes > 1:
             self.accelerator = accelerator
@@ -60,7 +60,7 @@ class BaseEvalHarness(LM):
             self.accelerator = None
         if self.accelerator is not None:
             print(f"device_map: {self.accelerator.device}")
-            # 将不在主线程的标准输出和标准错误重定向到空设备
+            # only allowing print from main processes
             if not self.accelerator.is_main_process:
                 f = open(os.devnull, 'w')
                 sys.stdout = f
@@ -78,7 +78,7 @@ class BaseEvalHarness(LM):
             self._world_size = 1
         self.sampler.model = self.sampler.model.to(device)
         self.sampler.model.eval()
-        self.device = self.sampler.model.device  # 从最终的模型获取最准确的设备信息
+        self.device = self.sampler.model.device
 
         self.mc_num = mc_num
         self.batch_size = int(batch_size)
@@ -252,13 +252,13 @@ class BaseEvalHarness(LM):
         for req in tqdm(requests, desc="Generating...", disable=not on_main_process):
             question = req.args[0]
             # treat as base_model on in humaneval dataset
-            if (not self.is_instruct) or ('task_id' in req.doc and str(req.doc['task_id']).lower().startswith('humaneval')):
+            if (not self.is_instruct) or ('task_id' in req.doc and str(req.doc['task_id']).lower().startswith('BCKhumaneval')):
                 prompt_str = question
             else:
                 m = [{"role": "user", "content": question}]
                 prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
             prompt = tokenizer(prompt_str, return_tensors="pt").input_ids.to(self.device)
-            # print(f"\n{'=' * 20} prompt_str: \n{prompt_str} {'=' * 20}")
+            print(f"\n{'=' * 20} prompt_str: \n{prompt_str} {'=' * 20}")
 
             stop_tokens = req.args[1]['until']
             stop_tokens.append(tokenizer.eos_token)

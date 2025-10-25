@@ -30,9 +30,8 @@ class MRSamplerConfig(SamplerConfig):
     acceleration_threshold: float = 0.8
     acceleration_low_threshold: float = 0.6
     acceleration_factor: float = 1
-    min_k: int = 2
     # Mop-up phase config
-    mopup_gate_ratio: float = 0.9
+    mopup_gate_ratio: float = 0.8
     mopup_margin_threshold: float = 5.0
     max_mopup_steps: int = 10
     mopup_speed: int = 2
@@ -249,48 +248,56 @@ class MRSampler(BaseSampler):
 
         # post processing: density-based expansion + interval purification
         # 1. density-based expansion
-        density_expansion_intervals = []  # [(new_left, new_right), ...]
-        for i, (start, end) in enumerate(memory_intervals):
-            interval_width = end - start + 1
-            edge_width = max(3, int(interval_width * 0.4))  # marginal ratio = 0.4
-
-            left_density = org_confidence[:, start: start + edge_width].nan_to_num(neginf=0).mean().item()  # use org_confidence for robustness
-            left_delta = int(left_density * edge_width)
-            left = start
-            n_hit_wall = 0
-            left_search_min = max(self.block_start, start - left_delta)
-            for pos in range(start - 1, left_search_min - 1, -1):
-                if x[0, pos] != self.mask_id:
-                    n_hit_wall += 1
-                    if n_hit_wall > self.exploration_M:
-                        break
-                else:
-                    n_hit_wall = 0
-                    left = pos
-
-            right_density = org_confidence[:, end - edge_width + 1: end + 1].nan_to_num(neginf=0).mean().item()
-            right_delta = int(right_density * edge_width)
-            right = end
-            n_hit_wall = 0
-            right_search_max = min(self.block_end - 1, end + right_delta)
-            for pos in range(end + 1, right_search_max + 1):
-                if x[0, pos] != self.mask_id:
-                    n_hit_wall += 1
-                    if n_hit_wall > self.exploration_M:
-                        break
-                else:
-                    n_hit_wall = 0
-                    right = pos
-
-            density_expansion_intervals.append((left, right))
-
-        memory_intervals = self._merge_intervals(density_expansion_intervals)
+        # density_expansion_intervals = []  # [(new_left, new_right), ...]
+        # for i, (start, end) in enumerate(memory_intervals):
+        #     interval_width = end - start + 1
+        #     edge_width = max(3, int(interval_width * 0.4))  # marginal ratio = 0.4
+        #
+        #     left_density = org_confidence[:, start: start + edge_width].nan_to_num(neginf=0).mean().item()  # use org_confidence for robustness
+        #     left_delta = int(left_density * edge_width)
+        #     left = start
+        #     n_hit_wall = 0
+        #     left_search_min = max(self.block_start, start - left_delta)
+        #     for pos in range(start - 1, left_search_min - 1, -1):
+        #         if x[0, pos] != self.mask_id:
+        #             n_hit_wall += 1
+        #             if n_hit_wall > self.exploration_M:
+        #                 break
+        #         else:
+        #             n_hit_wall = 0
+        #             left = pos
+        #
+        #     right_density = org_confidence[:, end - edge_width + 1: end + 1].nan_to_num(neginf=0).mean().item()
+        #     right_delta = int(right_density * edge_width)
+        #     right = end
+        #     n_hit_wall = 0
+        #     right_search_max = min(self.block_end - 1, end + right_delta)
+        #     for pos in range(end + 1, right_search_max + 1):
+        #         if x[0, pos] != self.mask_id:
+        #             n_hit_wall += 1
+        #             if n_hit_wall > self.exploration_M:
+        #                 break
+        #         else:
+        #             n_hit_wall = 0
+        #             right = pos
+        #
+        #     density_expansion_intervals.append((left, right))
+        #
+        # memory_intervals = self._merge_intervals(density_expansion_intervals)
 
         # 2. interval purification: rule out intervals such that have been fully demasked during exploration steps
         purified_intervals = []
         for start, end in memory_intervals:
-            if (x[0, start:end + 1] == self.mask_id).any():
-                purified_intervals.append((start, end))
+            left, right = start, end
+            # unmasked contraction
+            while left <= right and x[0, left].item() != self.mask_id:
+                left += 1
+            while left <= right and x[0, right].item() != self.mask_id:
+                right -= 1
+            if left <= right:
+                purified_intervals.append((left, right))
+            # if (x[0, start:end + 1] == self.mask_id).any():
+            #     purified_intervals.append((start, end))
         memory_intervals = purified_intervals
 
         print(f"===== constructed decoding zones: {memory_intervals}")
@@ -315,21 +322,26 @@ class MRSampler(BaseSampler):
             return x, steps_used, [], [], []
 
         prompt_len = prompt_index[0].sum().item()
-        interval_states = [{'coords': (start, end), 'status': 'active'} for start, end in intervals]
+        # interval_states = [{'coords': (start, end), 'status': 'active'} for start, end in intervals]
 
         outputs = []
         confidences = []
         transfer_idxs = []
+        history_intervals = []
 
-        while any(s['status'] == 'active' for s in interval_states):
+        # while any(s['status'] == 'active' for s in interval_states):
+        while len(intervals) > 0:
             # only focus on decoding zones
             dynamic_accel_mask = torch.zeros_like(x, dtype=torch.bool)
             n_active_intervals = 0
-            for state in interval_states:
-                if state['status'] == 'active':
-                    start, end = state['coords']
-                    dynamic_accel_mask[:, start: end + 1] = True
-                    n_active_intervals += 1
+            # for state in interval_states:
+            #     if state['status'] == 'active':
+            #         start, end = state['coords']
+            #         dynamic_accel_mask[:, start: end + 1] = True
+            #         n_active_intervals += 1
+            for (start, end) in intervals:
+                dynamic_accel_mask[:, start: end + 1] = True
+                n_active_intervals += 1
             if n_active_intervals == 0:
                 break
 
@@ -339,78 +351,122 @@ class MRSampler(BaseSampler):
             GG = False
 
             confidence[:, 0: self.block_start] = confidence[:, self.block_end:] = -np.inf   # semi support
-            confidence_in_active_zones = torch.where(dynamic_accel_mask, confidence, -np.inf)
+            transfer_index = confidence > 0.96   # extreme confidence updating is safe
+            # confidence_in_active_zones = torch.where(dynamic_accel_mask, confidence, -np.inf)
 
             # do confidence-base parallel decoding
-            transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
             # TODO: 考虑在不同区间内结合各自的密度进行更新，可以基于区间密度平均(背诵vs灵感)，也可以将密度作为置信值的一部分(熟就是熟)，或二者都(数学式)
             total_n_para_updated = 0
             total_n_cons_updated = 0
-            for state in interval_states:
-                if state['status'] != 'active':
-                    continue
+            for (itv_start, itv_end) in intervals:
+                # if state['status'] != 'active':
+                #     continue
+                # itv_start, itv_end = state['coords']
 
-                itv_start, itv_end = state['coords']
                 mask_in_curr_zone = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
                 mask_in_curr_zone[:, itv_start:itv_end] = True
-                confidence_in_curr_zone = torch.zeros_like(x0, dtype=confidence_in_active_zones.dtype, device=x0.device)
-                confidence_in_curr_zone[:, itv_start: itv_end + 1] = confidence_in_active_zones[:, itv_start: itv_end + 1]
-                # 更新策略1[加速]: 并行解码策略更新
-                if self.acceleration_parallel_method == 'fixed':
+                confidence_in_curr_zone = torch.zeros_like(x0, dtype=confidence.dtype, device=x0.device)
+                confidence_in_curr_zone[:, itv_start: itv_end + 1] = confidence[:, itv_start: itv_end + 1]
+                # strategy1: parallel decoding based on confidence
+                if self.acceleration_parallel_method == 'fixed':  # meaningless for Divide and Conquer
                     para_transfer_index = (confidence_in_curr_zone > self.acceleration_threshold)
                 elif self.acceleration_parallel_method == 'factor':
                     # TODO: 3.使用Fast-dLLM中的公式: (n + 1) * (1 - c_{n}) < f 来确定最大的可并行解码n
                     # 1. 对>min_threshold的位置按confidence排序; 3. 对这些满足条件的index形成transfer_inedx
-                    cand_threshold = 0.0 * self.acceleration_threshold + 1.0 * self.acceleration_low_threshold
-                    cand_mask = (confidence_in_curr_zone > cand_threshold)  # (L,)
-                    # print(f"LB-satisfied #tokens: {cand_mask.sum().item()}")
-                    cand_idxs = torch.nonzero(cand_mask, as_tuple=False)[:, 1]  # (n,)
-                    cand_confs = confidence_in_curr_zone[cand_mask]  # (n,)
-                    # 根据cand_confs排序cand_idxs
-                    sorted_order = torch.argsort(cand_confs, descending=True)
-                    cand_idxs = cand_idxs[sorted_order]
-                    cand_confs = cand_confs[sorted_order]
-                    # 2. 从cand_confs最低conf处开始挨个试验可行的n，直到满足条件;
-                    for conf_idx, conf in reversed(list(enumerate(cand_confs.tolist()))):
-                        para_feasible_n = int(self.acceleration_factor / (1 - conf + 1e-6) - 1)
-                        #  3. 若满足公式，则根据这些满足条件的index形成transfer_inedx
-                        if para_feasible_n >= conf_idx + 1:
-                            transfer_index.scatter_(dim=1, index=cand_idxs[:conf_idx + 1].unsqueeze(0), value=True)
-                            break
+                    para_transfer_index = torch.zeros_like(confidence_in_curr_zone, dtype=torch.bool, device=x0.device)
+                    for b in range(confidence_in_curr_zone.shape[0]):
+                        conf_b = confidence_in_curr_zone[b].clone()
+                        cand_mask = (conf_b > 0)  # (L,)
+                        # 根据cand_confs排序cand_idxs
+                        cand_idxs = torch.nonzero(cand_mask, as_tuple=False).squeeze(1)  # (n,)
+                        cand_confs = conf_b[cand_mask]  # (n,)
+                        sorted_order = torch.argsort(cand_confs, descending=True)
+                        cand_idxs = cand_idxs[sorted_order]
+                        cand_confs = cand_confs[sorted_order]
+                        # 2. 从cand_confs最低conf处开始挨个试验可行的n，直到满足条件;
+                        for conf_idx, conf in reversed(list(enumerate(cand_confs.tolist()))):
+                            para_feasible_n = int(self.acceleration_factor / (1 - conf + 1e-6) - 1)
+                            #  3. 若满足公式，则根据这些满足条件的index形成transfer_inedx
+                            if para_feasible_n >= conf_idx + 1:
+                                para_transfer_index.scatter_(dim=1, index=cand_idxs[:conf_idx + 1].unsqueeze(0), value=True)
+                                break
                 elif self.acceleration_parallel_method == 'entropy':
                     pass
                 elif self.acceleration_parallel_method == 'margin':
                     pass
-
                 n_para_updated = para_transfer_index.sum().item()
                 transfer_index |= para_transfer_index
                 total_n_para_updated += n_para_updated
 
+            if total_n_para_updated == 0:
+                # final dance
+                cons_transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+                _, topk_idxs = torch.topk(confidence, k=min(1, (confidence > self.acceleration_low_threshold).sum().item()), dim=-1)  # (k,)
+                cons_transfer_index.scatter_(dim=1, index=topk_idxs, value=True)
+                total_n_cons_updated = cons_transfer_index.sum().item()
+                transfer_index |= cons_transfer_index
             total_n_updated = total_n_para_updated + total_n_cons_updated
-            if total_n_updated > 0:
-                x[transfer_index] = x0[transfer_index]
-                # print(f"transfered positions: {torch.where(transfer_index)[-1]}")
-                # TODO: 3.根据区间边缘的密度，在一定程度上再动态推进区间（惯性）
-                # 更新每个活跃区间的状态
-                for state in interval_states:
-                    if state['status'] == 'active':
-                        start, end = state['coords']
-                        if not (x[:, start: end + 1] == self.mask_id).any():
-                            state['status'] = 'completed'
 
+            x[transfer_index] = x0[transfer_index]
             print(f"curr_step {current_step} [Acceleration] (block-{self.num_block}): "
                   f"total_n_updated({total_n_updated}) = total_n_para_updated({total_n_para_updated})) + total_n_cons_updated({total_n_cons_updated})");
 
+            # TODO: 3.根据区间边缘的密度，在一定程度上再动态推进区间（惯性）
+            # enrolling expansion
+            enrolled_intervals = []
+            n_hit_tolerance = self.exploration_M
+            for i, itv in enumerate(intervals):
+                # if state['status'] == 'active':
+                # enroll left
+                start, end = itv
+
+                # potential enrolling expansion
+                left = start
+                left_search_min = intervals[i-1][1] + 1 if i > 0 else self.block_start
+                n_hit_wall = 0
+                for pos in range(start - 1, left_search_min - 1, -1):
+                    if confidence[0, pos] <= self.acceleration_low_threshold:
+                        n_hit_wall += 1
+                        if n_hit_wall > n_hit_tolerance:
+                            break
+                    else:
+                        n_hit_wall = 0
+                        left = pos
+                right = end
+                right_search_max = intervals[i+1][0] - 1 if i < len(intervals) - 1 else self.block_end - 1
+                n_hit_wall = 0
+                for pos in range(right + 1, right_search_max):
+                    if confidence[0, pos] <= self.acceleration_low_threshold:
+                        n_hit_wall += 1
+                        if n_hit_wall > n_hit_tolerance:
+                            break
+                    else:
+                        n_hit_wall = 0
+                        right = pos
+
+                # unmasked contraction
+                while left <= right and x[0, left].item() != self.mask_id:
+                    left += 1
+                while left <= right and x[0, right].item() != self.mask_id:
+                    right -= 1
+
+                if left <= right and (x[:, left: right + 1] == self.mask_id).any():
+                   enrolled_intervals.append((left, right)) # keep active
+
+            intervals = self._merge_intervals(enrolled_intervals)
+            print(f"intervals after enrolling: {intervals}")
+
             # for visualization
+            history_intervals.append([(start - prompt_len, end - prompt_len) for start, end in intervals])
             outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
             confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
             transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
 
             # exit when its speed <= that in Divide phase
-            if total_n_updated < self.exp_N:
+            if total_n_updated <= self.exp_N:
                 break
 
-        return x, steps_used, outputs, confidences, transfer_idxs
+        return x, steps_used, outputs, confidences, transfer_idxs, history_intervals
 
     def mop_up_phase(
             self,
@@ -512,7 +568,7 @@ class MRSampler(BaseSampler):
         confidences = []
         transfer_idxs = []
         phase_states = []  # [{'phase':'exploration/acceleration/mopup', 'range': (start, end)}]
-        exploration_intervals = []  # [{'inceptive_step': 0, 'history_intervals': [[(start, end), ...], [(start, end), ...], ...]}]
+        history_intervals_all = []  # [{'inceptive_step': 0, 'history_intervals': [[(start, end), ...], [(start, end), ...], ...]}]
         accumulated_steps = 0
 
         start_time = time.perf_counter()
@@ -528,13 +584,7 @@ class MRSampler(BaseSampler):
             self.num_block = num_block
 
             block_step_i = 0
-            for EA_idx in range(block_steps - self.max_mopup_steps):
-                # check mopup condition in the current block
-                num_masked = (x[:, self.block_start: self.block_end] == self.mask_id).sum().item()
-                masked_ratio = 1.0 * num_masked / block_length
-                if masked_ratio < (1 - self.mopup_gate_ratio):
-                    print(f"block {num_block}: E-A turn ends with unmased ratio: {(1 - masked_ratio) * 100}% (>{self.mopup_gate_ratio * 100}%)")
-                    break
+            for EA_idx in range(int(block_steps * self.mopup_gate_ratio)):
 
                 # ① Divide
                 x, intervals, exploration_steps, exploration_outputs, exploration_confidences, exploration_transfer_idxs, history_intervals \
@@ -551,7 +601,7 @@ class MRSampler(BaseSampler):
                 transfer_idxs.extend(exploration_transfer_idxs)
                 phase_states.append(
                     {'phase': 'exploration', 'range': (accumulated_steps, accumulated_steps + exploration_steps)})
-                exploration_intervals.append({'inceptive_step': accumulated_steps, 'history_intervals': history_intervals})
+                history_intervals_all.append({'inceptive_step': accumulated_steps, 'history_intervals': history_intervals})
                 # print(f"exploration phase ends, use steps: {exploration_steps}, TPS: {(num_masked - num_masked_exploration) / (exploration_steps)}")
                 # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Exploration")
                 block_step_i += exploration_steps
@@ -559,7 +609,7 @@ class MRSampler(BaseSampler):
 
                 # ② Conquer
                 if intervals:
-                    x, acceleration_steps, outputs_acceleration, confidences_acceleration, transfer_idxs_acceleration \
+                    x, acceleration_steps, outputs_acceleration, confidences_acceleration, transfer_idxs_acceleration, history_intervals \
                         = self.acceleration_phase(
                             x,
                             prompt_index,
@@ -573,9 +623,18 @@ class MRSampler(BaseSampler):
                     transfer_idxs.extend(transfer_idxs_acceleration)
                     phase_states.append(
                         {'phase': 'acceleration', 'range': (accumulated_steps, accumulated_steps + acceleration_steps)})
+                    history_intervals_all.append(
+                        {'inceptive_step': accumulated_steps, 'history_intervals': history_intervals})
                     block_step_i += acceleration_steps
                     accumulated_steps += acceleration_steps
                     # print(f"Allocated: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB; Acceleration")
+
+                    # check mopup condition in the current block
+                    masked_ratio = 1.0 * (x[:, self.block_start: self.block_end] == self.mask_id).sum().item() / block_length
+                    if masked_ratio < (1 - self.mopup_gate_ratio):
+                        print(
+                            f"block {num_block}: E-A turn ends with unmased ratio: {(1 - masked_ratio) * 100}% (>{self.mopup_gate_ratio * 100}%)")
+                        break
                 else:
                     break
 
@@ -621,13 +680,13 @@ class MRSampler(BaseSampler):
             confidences=confidences,
             transfer_idxs=transfer_idxs,
             phase_states=phase_states,
-            exploration_intervals=exploration_intervals,
+            history_intervals_all=history_intervals_all,
             metrics=metrics,
         )
 
 def main():
     set_seed(1234)
-    device = 'cuda:2'
+    device = 'cuda:0'
     model_path = "../models/LLaDA-8B-Instruct"
 
     # 4-shot prompt
@@ -637,7 +696,7 @@ def main():
 
     # base gsm8k prompt
     gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    prompts = gsm8k_dataset['test']['question'][2:3]
+    prompts = gsm8k_dataset['test']['question'][0:3]
 
     # base humaneval prompt
     # humaneval_dataset = load_dataset('openai/openai_humaneval')
@@ -653,20 +712,21 @@ def main():
         cfg_scale=0.0,
         temperature=0.0,
         max_exploration_steps=10,
-        exploration_N=2,
+        exploration_N=3,
         exploration_M=2,
-        exploration_threshold=0.25,
-        acceleration_parallel_method='fixed',
+        exploration_threshold=0.1,
+        acceleration_parallel_method='factor',
         acceleration_threshold=0.9,
         acceleration_low_threshold=0.6,
         acceleration_factor=1,
-        mopup_gate_ratio=0.8,
+        mopup_gate_ratio=0.75,
         mopup_margin_threshold=3.0,
         max_mopup_steps=30,
         mopup_speed=2,
         positional_weights_type='ratio',
         max_weight=1.0,
         initial_min_weight=0.05,
+        ur_factor=1.0
     )
 
     sampler = MRSampler.from_path(
@@ -676,9 +736,13 @@ def main():
         torch_dtype=torch.bfloat16
     )
 
+    # max_steps = 256
+    # block_length = 64
+    max_steps = 128
+    block_lengthes = [128]
+    # exploration_thresholds = [0.15, 0.25, 0.4] # -> 0.25 is good for 'fixed', 'factor'
+    exploration_thresholds = [0.25]
 
-    max_steps = 256
-    block_length = 64
     for i, prompt_text in enumerate(prompts):
         print('=' * 20 + f" Generating prompt_idx: {i} " + "=" * 20)
         tokenizer = sampler.tokenizer
@@ -688,15 +752,15 @@ def main():
         input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
         # input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
 
-        # exploration_thresholds = [0.15, 0.25, 0.4] # -> 0.25 is good for 'fixed', 'factor'
-        exploration_thresholds = [0.1, 0.15, 0.2, 0.25]
-        for exp_tr in exploration_thresholds:
-            sampler.exploration_threshold = exp_tr
-            print('=' * 20 + f" exploration_threshold: {exp_tr} " + "=" * 20)
-            OUT = sampler.generate(input_ids, gen_length=max_steps, max_steps=max_steps, block_length=block_length)
-            out = OUT.out
-            ans = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
-            print(f"Prompt_{i}'s answer: {ans}\n")
+        for block_length in block_lengthes:
+            print('=' * 20 + f" block_length: {block_length} " + "=" * 20)
+            for exp_tr in exploration_thresholds:
+                sampler.exploration_threshold = exp_tr
+                print('=' * 20 + f" exploration_threshold: {exp_tr} " + "=" * 20)
+                OUT = sampler.generate(input_ids, gen_length=max_steps, max_steps=max_steps, block_length=block_length)
+                out = OUT.out
+                ans = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+                print(f"Prompt_{i}'s answer: {ans}\n")
 
 
 if __name__ == '__main__':
