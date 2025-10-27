@@ -11,7 +11,7 @@ PROJECT_ROOT="/homebck/home/xiangzhong_guest/LLADA/llada_sampling_system"
 MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 
 # available gpus
-GPU_IDS=(1 2)
+GPU_IDS=(1)
 MASTER_PORT=8086
 
 

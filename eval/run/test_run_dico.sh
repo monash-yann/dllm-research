@@ -11,18 +11,18 @@ PROJECT_ROOT="/homebck/home/xiangzhong_guest/LLADA/llada_sampling_system"
 MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 
 # available gpus
-GPU_IDS=(0 1 2)
+GPU_IDS=(1)
 MASTER_PORT=8086
 
 
-#N_LIMIT=2
+N_LIMIT=20
 
 # gsm8k NUM_FEWSHOT should be 4
 #TASKS="gsm8k"
 #NUM_FEWSHOT=4
 
 # humaneval don't have fewshot
-TASKS="humaneval"
+#TASKS="humaneval"
 
 # MBPP has a default(maximum) fewshot number of 3
 #TASKS="mbpp"
@@ -36,9 +36,9 @@ TASKS="humaneval"
 #INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/mmlu_generative/"
 #NUM_FEWSHOT=2
 
-#TASKS=sudoku
-#INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/sudoku/"
-#NUM_FEWSHOT=2
+TASKS=sudoku
+INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/sudoku/"
+NUM_FEWSHOT=4
 
 #TASKS=countdown
 #INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/countdown/"
@@ -70,7 +70,7 @@ MOPUP_MARGIN_THRESHOLD=3.0
 MAX_MOPUP_STEPS=20
 MOPUP_SPEED=2
 
-POSITIONAL_WEIGHTS_TYPE='ratio'
+POSITIONAL_WEIGHTS_TYPE='none'
 MAX_WEIGHT=1.0
 INITIAL_MIN_WEIGHT=0.05
 UR_FACTOR=1.0
@@ -78,13 +78,13 @@ UR_FACTOR=1.0
 
 MODEL_NAME=$(basename "$MODEL_PATH")
 
-SL_VALUES=(256)
+SL_VALUES=(128)
 
 for SL in "${SL_VALUES[@]}"
 do
   GEN_LENGTH=$SL
   STEPS=$SL
-  BLOCK_LENGTH=64
+  BLOCK_LENGTH=128
   echo "========================== evaluating SL=${SL}, BL=${BLOCK_LENGTH} =========================="
 
   for EXPLORATION_N in "${EXPLORATION_N_VALUES[@]}"

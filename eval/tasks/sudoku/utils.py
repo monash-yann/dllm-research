@@ -16,6 +16,8 @@ def doc_to_target(doc: dict) -> str:
 def process_docs(dataset: datasets.Dataset) -> datasets.Dataset:
     def _process_doc(doc: dict) -> dict:
         puzzle_str = str(doc["Puzzle"])
+        if len(puzzle_str) < 16:
+            puzzle_str = puzzle_str.rjust(16, '0')
         puzzle_str = '\n'.join(puzzle_str[i: i+4] for i in range(0, len(puzzle_str), 4))
         out_doc = {
             "puzzle": puzzle_str.strip(),

@@ -202,10 +202,10 @@ def visualize_MR():
     config = MRSamplerConfig(
         cfg_scale=0.0,
         temperature=0.0,
-        max_exploration_steps=7,
-        exploration_N=3,
+        max_exploration_steps=5,
+        exploration_N=4,
         exploration_M=2,
-        exploration_threshold=0.2,
+        exploration_threshold=0.25,
         acceleration_parallel_method='factor',
         acceleration_threshold=0.9,
         acceleration_low_threshold=0.6,
@@ -214,10 +214,10 @@ def visualize_MR():
         mopup_margin_threshold=3,
         max_mopup_steps=20,
         mopup_speed=1,
-        positional_weights_type='none',
+        positional_weights_type='ratio',
         max_weight=1.0,
         initial_min_weight=0.05,
-        ur_factor=1
+        ur_factor=1.5
     )
 
     sampler = MRSampler.from_path(
@@ -231,12 +231,12 @@ def visualize_MR():
 
     gen_length = 256
     block_lengthes = [128]
-    exploration_thresholds = [0.2, 0.3]
+    exploration_thresholds = [0.3]
     sampler.ur_factor = 1.0
     for block_length in block_lengthes:
         for exp_tr in exploration_thresholds:
             sampler.exploration_threshold = exp_tr
-            output_dir = f"imgs/dico1027_APM{sampler.acceleration_parallel_method}_PWT2{sampler.positional_weights_type}_imw${sampler.initial_min_weight}/gsm8k_SL{gen_length}_BL{block_length}/N{sampler.exploration_N}E{sampler.max_exploration_steps}_exptr{exp_tr}/"
+            output_dir = f"imgs/dico1027denseEAconfM_APM{sampler.acceleration_parallel_method}_PWT2{sampler.positional_weights_type}_imw${sampler.initial_min_weight}_ur${sampler.ur_factor}/gsm8k_SL{gen_length}_BL{block_length}/N{sampler.exploration_N}E{sampler.max_exploration_steps}_exptr{exp_tr}/"
             run_gen_until(
                 sampler=sampler,
                 prompts=gsm8k_prompts,

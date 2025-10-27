@@ -11,13 +11,13 @@ PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
 MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 
 # available gpus
-GPU_IDS=(0 1 2)
+GPU_IDS=(0 1)
 MASTER_PORT=8086
 
 #N_LIMIT=4
 
-TASKS="gsm8k"
-NUM_FEWSHOT=4
+#TASKS="gsm8k"
+#NUM_FEWSHOT=4
 
 #TASKS="mbpp"
 
@@ -26,6 +26,10 @@ NUM_FEWSHOT=4
 # math-500 is a dataset on huggingface
 #TASKS="math-500"
 #INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/math-500/"
+
+TASKS=sudoku
+INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/sudoku/"
+NUM_FEWSHOT=4
 
 GPU_LIST=$(IFS=,; echo "${GPU_IDS[*]}")
 NUM_GPUS=${#GPU_IDS[@]}
@@ -41,16 +45,16 @@ POSITIONAL_WEIGHTS_TYPE='none'
 MAX_WEIGHT=1.0
 INITIAL_MIN_WEIGHT=0.0
 REMASKING="low_confidence"
-DECODING_METHOD="fixed"
+DECODING_METHOD="topk"
 FACTOR=1.0
 CONFIDENCE_THRESHOLD=0.9
 K=1
 
 MODEL_NAME=$(basename "$MODEL_PATH")
 
-SL_VALUES=(256)
+SL_VALUES=(128)
 
-BLOCK_LENGTH=32
+BLOCK_LENGTH=128
 
 for SL in "${SL_VALUES[@]}"
 do

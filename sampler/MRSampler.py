@@ -229,14 +229,23 @@ class MRSampler(BaseSampler):
                 transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
                 history_intervals.append([(start - prompt_len, end - prompt_len) for start, end in merged_intervals])
 
-                # if converged, early stop and exits the Divide phase
+                # if converged (passive + positive), early stop and exits the Divide phase
                 if exist_new_seed or exist_intervals_advance:
                     no_advance_n = 0
                 else:
                     no_advance_n += 1
                     # consecutive failures
                     if no_advance_n >= 2:
+                        print("====> no enough advancement, exit Exploration phase.")
                         break
+                intervals_mask = torch.zeros_like(x, dtype=torch.bool)
+                for (start, end) in memory_intervals:
+                    intervals_mask[:, start: end + 1] = True
+                intervals_effective_index = (intervals_mask & (x == self.mask_id))
+                intervals_effective_density = confidence[intervals_effective_index].mean().item() if intervals_effective_index.sum().item() > 0 else 0.0
+                if intervals_effective_density >= self.acceleration_low_threshold:
+                    print(f"====> intervals density on masked tokens {intervals_effective_density:.2f} >= acceleration_low_threshold {self.acceleration_low_threshold}, exit Exploration phase.")
+                    break
             else:
                 print(f"curr_step {current_step} [Exploration] GG!!! (block-{self.num_block} unmasked_ratio: {unmasked_ratio:.2f}) exp_step {exp_step + 1}: select_N = {select_N}, with intervals {memory_intervals}")
                 transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
@@ -245,10 +254,10 @@ class MRSampler(BaseSampler):
                 transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
                 history_intervals.append([(start - prompt_len, end - prompt_len) for start, end in memory_intervals])
 
-            self.exp_N = select_N
-
             if GG:
                 break
+
+            self.exp_N = select_N
 
         # post processing: density-based expansion + interval purification
         # 1. density-based expansion
@@ -334,153 +343,156 @@ class MRSampler(BaseSampler):
         history_intervals = []
 
         # while any(s['status'] == 'active' for s in interval_states):
-        while len(intervals) > 0:
-            # only focus on decoding zones
-            dynamic_accel_mask = torch.zeros_like(x, dtype=torch.bool)
-            n_active_intervals = 0
-            # for state in interval_states:
-            #     if state['status'] == 'active':
-            #         start, end = state['coords']
-            #         dynamic_accel_mask[:, start: end + 1] = True
-            #         n_active_intervals += 1
-            for (start, end) in intervals:
-                dynamic_accel_mask[:, start: end + 1] = True
-                n_active_intervals += 1
-            if n_active_intervals == 0:
-                break
+        dynamic_accel_mask = torch.zeros_like(x, dtype=torch.bool)
+        for (start, end) in intervals:
+            dynamic_accel_mask[:, start: end + 1] = True
+        if dynamic_accel_mask.sum().item() > 0:
+            while len(intervals) > 0:
+                # only focus on decoding zones
 
-            x0, confidence, org_confidence, _ = self._model_forward(x, prompt_index)
-            current_step += 1
-            steps_used += 1
+                x0, confidence, org_confidence, _ = self._model_forward(x, prompt_index)
+                current_step += 1
+                steps_used += 1
 
-            # mutiplying positional weights
-            # if self.positional_weights_type == 'absolute':
-            #     confidence[:, self.block_start: self.block_end] = confidence[:, self.block_start: self.block_end] * self.absolute_positional_weights[current_step]
-            # elif self.positional_weights_type == 'ratio':
-            #     # MARK
-            #     global_unmasked_ratio = (x[:, prompt_len: ] != self.mask_id).sum().item() / self.gen_length
-            #     dynamic_positional_weights = self.compute_dynamic_positional_weights(self.block_length, global_unmasked_ratio, device=x0.device)
-            #     confidence[:, self.block_start: self.block_end] = confidence[:, self.block_start: self.block_end] * dynamic_positional_weights
-            # elif self.positional_weights_type == 'static':
-            #     confidence[:, self.block_start: self.block_end] = confidence[:, self.block_start: self.block_end] * self.static_positional_weights[current_step]
-            # else:
-            #     pass
+                # mutiplying positional weights
+                # if self.positional_weights_type == 'absolute':
+                #     confidence[:, self.block_start: self.block_end] = confidence[:, self.block_start: self.block_end] * self.absolute_positional_weights[current_step]
+                # elif self.positional_weights_type == 'ratio':
+                #     # MARK
+                #     global_unmasked_ratio = (x[:, prompt_len: ] != self.mask_id).sum().item() / self.gen_length
+                #     dynamic_positional_weights = self.compute_dynamic_positional_weights(self.block_length, global_unmasked_ratio, device=x0.device)
+                #     confidence[:, self.block_start: self.block_end] = confidence[:, self.block_start: self.block_end] * dynamic_positional_weights
+                # elif self.positional_weights_type == 'static':
+                #     confidence[:, self.block_start: self.block_end] = confidence[:, self.block_start: self.block_end] * self.static_positional_weights[current_step]
+                # else:
+                #     pass
 
-            confidence[:, 0: self.block_start] = confidence[:, self.block_end:] = -np.inf   # semi support
-            transfer_index = confidence > 0.98   # extreme confidence updating is safe
-            # confidence_in_active_zones = torch.where(dynamic_accel_mask, confidence, -np.inf)
+                confidence[:, 0: self.block_start] = confidence[:, self.block_end:] = -np.inf   # semi support
+                transfer_index = confidence > 0.98   # extreme confidence updating is safe
+                # confidence_in_active_zones = torch.where(dynamic_accel_mask, confidence, -np.inf)
 
-            # do confidence-base parallel decoding
-            # TODO: 考虑在不同区间内结合各自的密度进行更新，可以基于区间密度平均(背诵vs灵感)，也可以将密度作为置信值的一部分(熟就是熟)，或二者都(数学式)
-            total_n_para_updated = 0
-            total_n_cons_updated = 0
-            for (itv_start, itv_end) in intervals:
-                # if state['status'] != 'active':
-                #     continue
-                # itv_start, itv_end = state['coords']
+                # do confidence-base parallel decoding
+                # TODO: 考虑在不同区间内结合各自的密度进行更新，可以基于区间密度平均(背诵vs灵感)，也可以将密度作为置信值的一部分(熟就是熟)，或二者都(数学式)
+                total_n_para_updated = 0
+                total_n_cons_updated = 0
+                for (itv_start, itv_end) in intervals:
+                    # if state['status'] != 'active':
+                    #     continue
+                    # itv_start, itv_end = state['coords']
 
-                mask_in_curr_zone = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-                mask_in_curr_zone[:, itv_start:itv_end] = True
-                confidence_in_curr_zone = torch.zeros_like(x0, dtype=confidence.dtype, device=x0.device)
-                confidence_in_curr_zone[:, itv_start: itv_end + 1] = confidence[:, itv_start: itv_end + 1]
-                # strategy1: parallel decoding based on confidence
-                if self.acceleration_parallel_method == 'fixed':  # meaningless for Divide and Conquer
-                    para_transfer_index = (confidence_in_curr_zone > self.acceleration_threshold)
-                elif self.acceleration_parallel_method == 'factor':
-                    # TODO: 3.使用Fast-dLLM中的公式: (n + 1) * (1 - c_{n}) < f 来确定最大的可并行解码n
-                    # 1. 对>min_threshold的位置按confidence排序; 3. 对这些满足条件的index形成transfer_inedx
-                    para_transfer_index = torch.zeros_like(confidence_in_curr_zone, dtype=torch.bool, device=x0.device)
-                    for b in range(confidence_in_curr_zone.shape[0]):
-                        conf_b = confidence_in_curr_zone[b].clone()
-                        cand_mask = (conf_b > 0)  # (L,)
-                        # 根据cand_confs排序cand_idxs
-                        cand_idxs = torch.nonzero(cand_mask, as_tuple=False).squeeze(1)  # (n,)
-                        cand_confs = conf_b[cand_mask]  # (n,)
-                        sorted_order = torch.argsort(cand_confs, descending=True)
-                        cand_idxs = cand_idxs[sorted_order]
-                        cand_confs = cand_confs[sorted_order]
-                        # 2. 从cand_confs最低conf处开始挨个试验可行的n，直到满足条件;
-                        for conf_idx, conf in reversed(list(enumerate(cand_confs.tolist()))):
-                            para_feasible_n = int(self.acceleration_factor / (1 - conf + 1e-6) - 1)
-                            #  3. 若满足公式，则根据这些满足条件的index形成transfer_inedx
-                            if para_feasible_n >= conf_idx + 1:
-                                para_transfer_index.scatter_(dim=1, index=cand_idxs[:conf_idx + 1].unsqueeze(0), value=True)
+                    mask_in_curr_zone = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+                    mask_in_curr_zone[:, itv_start:itv_end] = True
+                    confidence_in_curr_zone = torch.zeros_like(x0, dtype=confidence.dtype, device=x0.device)
+                    confidence_in_curr_zone[:, itv_start: itv_end + 1] = confidence[:, itv_start: itv_end + 1]
+                    # strategy1: parallel decoding based on confidence
+                    if self.acceleration_parallel_method == 'fixed':  # meaningless for Divide and Conquer
+                        para_transfer_index = (confidence_in_curr_zone > self.acceleration_threshold)
+                    elif self.acceleration_parallel_method == 'factor':
+                        # TODO: 3.使用Fast-dLLM中的公式: (n + 1) * (1 - c_{n}) < f 来确定最大的可并行解码n
+                        # 1. 对>min_threshold的位置按confidence排序; 3. 对这些满足条件的index形成transfer_inedx
+                        para_transfer_index = torch.zeros_like(confidence_in_curr_zone, dtype=torch.bool, device=x0.device)
+                        for b in range(confidence_in_curr_zone.shape[0]):
+                            conf_b = confidence_in_curr_zone[b].clone()
+                            cand_mask = (conf_b > 0)  # (L,)
+                            # 根据cand_confs排序cand_idxs
+                            cand_idxs = torch.nonzero(cand_mask, as_tuple=False).squeeze(1)  # (n,)
+                            cand_confs = conf_b[cand_mask]  # (n,)
+                            sorted_order = torch.argsort(cand_confs, descending=True)
+                            cand_idxs = cand_idxs[sorted_order]
+                            cand_confs = cand_confs[sorted_order]
+                            # 2. 从cand_confs最低conf处开始挨个试验可行的n，直到满足条件;
+                            for conf_idx, conf in reversed(list(enumerate(cand_confs.tolist()))):
+                                para_feasible_n = int(self.acceleration_factor / (1 - conf + 1e-6) - 1)
+                                #  3. 若满足公式，则根据这些满足条件的index形成transfer_inedx
+                                if para_feasible_n >= conf_idx + 1:
+                                    para_transfer_index.scatter_(dim=1, index=cand_idxs[:conf_idx + 1].unsqueeze(0), value=True)
+                                    break
+                    elif self.acceleration_parallel_method == 'entropy':
+                        pass
+                    elif self.acceleration_parallel_method == 'margin':
+                        pass
+                    n_para_updated = para_transfer_index.sum().item()
+                    transfer_index |= para_transfer_index
+                    total_n_para_updated += n_para_updated
+
+                if total_n_para_updated == 0:
+                    # final dance
+                    cons_transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+                    _, topk_idxs = torch.topk(confidence, k=min(1, (confidence > self.acceleration_low_threshold).sum().item()), dim=-1)  # (k,)
+                    cons_transfer_index.scatter_(dim=1, index=topk_idxs, value=True)
+                    total_n_cons_updated = cons_transfer_index.sum().item()
+                    transfer_index |= cons_transfer_index
+                total_n_updated = total_n_para_updated + total_n_cons_updated
+
+                x[transfer_index] = x0[transfer_index]
+                print(f"curr_step {current_step} [Acceleration] (block-{self.num_block}): "
+                      f"total_n_updated({total_n_updated}) = total_n_para_updated({total_n_para_updated})) + total_n_cons_updated({total_n_cons_updated})");
+
+                # enrolling expansion
+                enrolled_intervals = []
+                n_hit_tolerance = self.exploration_M
+                for i, itv in enumerate(intervals):
+                    # if state['status'] == 'active':
+                    # enroll left
+                    start, end = itv
+
+                    # potential enrolling expansion
+                    left = start
+                    left_search_min = intervals[i-1][1] + 1 if i > 0 else self.block_start
+                    n_hit_wall = 0
+                    for pos in range(start - 1, left_search_min - 1, -1):
+                        if confidence[0, pos] <= self.acceleration_low_threshold:
+                            n_hit_wall += 1
+                            if n_hit_wall > n_hit_tolerance:
                                 break
-                elif self.acceleration_parallel_method == 'entropy':
-                    pass
-                elif self.acceleration_parallel_method == 'margin':
-                    pass
-                n_para_updated = para_transfer_index.sum().item()
-                transfer_index |= para_transfer_index
-                total_n_para_updated += n_para_updated
+                        else:
+                            n_hit_wall = 0
+                            left = pos
+                    right = end
+                    right_search_max = intervals[i+1][0] - 1 if i < len(intervals) - 1 else self.block_end - 1
+                    n_hit_wall = 0
+                    for pos in range(right + 1, right_search_max):
+                        if confidence[0, pos] <= self.acceleration_low_threshold:
+                            n_hit_wall += 1
+                            if n_hit_wall > n_hit_tolerance:
+                                break
+                        else:
+                            n_hit_wall = 0
+                            right = pos
 
-            if total_n_para_updated == 0:
-                # final dance
-                cons_transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-                _, topk_idxs = torch.topk(confidence, k=min(1, (confidence > self.acceleration_low_threshold).sum().item()), dim=-1)  # (k,)
-                cons_transfer_index.scatter_(dim=1, index=topk_idxs, value=True)
-                total_n_cons_updated = cons_transfer_index.sum().item()
-                transfer_index |= cons_transfer_index
-            total_n_updated = total_n_para_updated + total_n_cons_updated
+                    # unmasked contraction
+                    while left <= right and x[0, left].item() != self.mask_id:
+                        left += 1
+                    while left <= right and x[0, right].item() != self.mask_id:
+                        right -= 1
 
-            x[transfer_index] = x0[transfer_index]
-            print(f"curr_step {current_step} [Acceleration] (block-{self.num_block}): "
-                  f"total_n_updated({total_n_updated}) = total_n_para_updated({total_n_para_updated})) + total_n_cons_updated({total_n_cons_updated})");
+                    if left <= right and (x[:, left: right + 1] == self.mask_id).any():
+                       enrolled_intervals.append((left, right)) # keep active
 
-            # TODO: 3.根据区间边缘的密度，在一定程度上再动态推进区间（惯性）
-            # enrolling expansion
-            enrolled_intervals = []
-            n_hit_tolerance = self.exploration_M
-            for i, itv in enumerate(intervals):
-                # if state['status'] == 'active':
-                # enroll left
-                start, end = itv
+                intervals = self._merge_intervals(enrolled_intervals)
+                print(f"intervals after enrolling: {intervals}")
 
-                # potential enrolling expansion
-                left = start
-                left_search_min = intervals[i-1][1] + 1 if i > 0 else self.block_start
-                n_hit_wall = 0
-                for pos in range(start - 1, left_search_min - 1, -1):
-                    if confidence[0, pos] <= self.acceleration_low_threshold:
-                        n_hit_wall += 1
-                        if n_hit_wall > n_hit_tolerance:
-                            break
-                    else:
-                        n_hit_wall = 0
-                        left = pos
-                right = end
-                right_search_max = intervals[i+1][0] - 1 if i < len(intervals) - 1 else self.block_end - 1
-                n_hit_wall = 0
-                for pos in range(right + 1, right_search_max):
-                    if confidence[0, pos] <= self.acceleration_low_threshold:
-                        n_hit_wall += 1
-                        if n_hit_wall > n_hit_tolerance:
-                            break
-                    else:
-                        n_hit_wall = 0
-                        right = pos
+                # for visualization
+                history_intervals.append([(start - prompt_len, end - prompt_len) for start, end in intervals])
+                outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
+                confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
+                transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
 
-                # unmasked contraction
-                while left <= right and x[0, left].item() != self.mask_id:
-                    left += 1
-                while left <= right and x[0, right].item() != self.mask_id:
-                    right -= 1
-
-                if left <= right and (x[:, left: right + 1] == self.mask_id).any():
-                   enrolled_intervals.append((left, right)) # keep active
-
-            intervals = self._merge_intervals(enrolled_intervals)
-            print(f"intervals after enrolling: {intervals}")
-
-            # for visualization
-            history_intervals.append([(start - prompt_len, end - prompt_len) for start, end in intervals])
-            outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
-            confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
-            transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
-
-            # exit when its speed <= that in Divide phase
-            if total_n_updated <= self.exp_N:
-                break
+                # exit when its speed <= that in Divide phase
+                # if total_n_updated <= self.exp_N:
+                #     break
+                dynamic_accel_mask.fill_(False)
+                for (start, end) in intervals:
+                    dynamic_accel_mask[:, start: end + 1] = True
+                if dynamic_accel_mask.sum().item() == 0:
+                    print(f"=====> all zones comsumed or demasked, exit Acceleration phase.")
+                    break
+                conf_rest_masked = confidence[dynamic_accel_mask & (x == self.mask_id)]
+                dens_mean = conf_rest_masked.mean().item()
+                # print(f"=====> current confidence density in the rest zones: {dens_mean}")
+                if dens_mean < self.acceleration_low_threshold:
+                    print(f"=====> not enough confidence density in the rest zones ({dens_mean}), exit Acceleration phase.")
+                    break
 
         return x, steps_used, outputs, confidences, transfer_idxs, history_intervals
 
@@ -510,20 +522,24 @@ class MRSampler(BaseSampler):
             x0, confidence, org_confidence, logits = self._model_forward(x, prompt_index)
             steps_used += 1
 
+            confidence[:, 0: self.block_start] = confidence[:, self.block_end:] = -np.inf  # semi support
+
             # transfer_index = conf_transfer_index = confidence > 0.98   # extreme confidence updating is safe
             # n_conf_updated = conf_transfer_index.sum().item()
 
-            top2_logits = torch.topk(logits, k=2, dim=-1).values  # (b, l, 2)
-            top2_margins = top2_logits[..., 0] - top2_logits[..., 1]  # (b, l)
-            top2_margins[:, 0: self.block_start] = top2_margins[:, self.block_end:] = 0  # semi support
-            #print statistics
-            block_top2_margins = top2_margins[:, self.block_start: self.block_end]
-            print(f"==> margins.mean={block_top2_margins.mean().item():.2f}, std={block_top2_margins.std().item():.2f}, "
-                  f"max={block_top2_margins.max().item():.2f}, min={block_top2_margins.min().item():.2f}")
-            top2_margins[x != self.mask_id] = 0
+            # top2_logits = torch.topk(logits, k=2, dim=-1).values  # (b, l, 2)
+            # top2_margins = top2_logits[..., 0] - top2_logits[..., 1]  # (b, l)
+            # top2_margins[:, 0: self.block_start] = top2_margins[:, self.block_end:] = 0  # semi support
+            # #print statistics
+            # block_top2_margins = top2_margins[:, self.block_start: self.block_end]
+            # print(f"==> margins.mean={block_top2_margins.mean().item():.2f}, std={block_top2_margins.std().item():.2f}, "
+            #       f"max={block_top2_margins.max().item():.2f}, min={block_top2_margins.min().item():.2f}")
+            # top2_margins[x != self.mask_id] = 0
+            #
+            # transfer_index_margin = (top2_margins > self.mopup_margin_threshold)
 
-            transfer_index_margin = (top2_margins > self.mopup_margin_threshold)
-
+            # Test Fixed conf update
+            transfer_index_margin = confidence > self.acceleration_threshold
             # n_margin_updated = (transfer_index_margin & ~conf_transfer_index).sum().item()
             n_margin_updated = transfer_index_margin.sum().item()
             n_topk_updated = min(num_masked, max(0, self.mopup_speed - n_margin_updated))
@@ -766,7 +782,7 @@ def main():
     max_steps = 256
     block_lengthes = [128]
     # exploration_thresholds = [0.15, 0.25, 0.4] # -> 0.25 is good for 'fixed', 'factor'
-    exploration_thresholds = [0.25]
+    exploration_thresholds = [0.3]
 
     for i, prompt_text in enumerate(prompts):
         print('=' * 20 + f" Generating prompt_idx: {i} " + "=" * 20)

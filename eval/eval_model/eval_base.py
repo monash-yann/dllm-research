@@ -261,7 +261,7 @@ class BaseEvalHarness(LM):
                 m.append({"role": "user", "content": question})
                 prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
             prompt = tokenizer(prompt_str, return_tensors="pt").input_ids.to(self.device)
-            print(f"\n{'=' * 20} prompt_str: \n{prompt_str} {'=' * 20}")
+            # print(f"\n{'=' * 20} prompt_str: \n{prompt_str} {'=' * 20}")
 
             stop_tokens = req.args[1]['until']
             stop_tokens.append(tokenizer.eos_token)
