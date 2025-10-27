@@ -102,7 +102,8 @@ class MRSampler(BaseSampler):
 
             # dynamic N
             unmasked_ratio = (x[:, self.block_start: self.block_end] != self.mask_id).sum().item() / self.block_length
-            select_N = max(1, round(self.exploration_N * (np.cos(np.pi/2 * unmasked_ratio))))
+            # select_N = max(1, round(self.exploration_N * (np.cos(np.pi/2 * unmasked_ratio))))
+            select_N = self.exploration_N
 
             confidence[:, 0: self.block_start] = confidence[:, self.block_end:] = -np.inf  # semi support
 
@@ -110,7 +111,9 @@ class MRSampler(BaseSampler):
             if self.positional_weights_type == 'absolute':
                 confidence[:, self.block_start: self.block_end] = confidence[:, self.block_start: self.block_end] * self.absolute_positional_weights[current_step]
             elif self.positional_weights_type == 'ratio':
-                dynamic_positional_weights = self.compute_dynamic_positional_weights(self.block_length, unmasked_ratio, device=x0.device)
+                # MARK
+                global_unmasked_ratio = (x[:, prompt_len: ] != self.mask_id).sum().item() / self.gen_length
+                dynamic_positional_weights = self.compute_dynamic_positional_weights(self.block_length, global_unmasked_ratio, device=x0.device)
                 confidence[:, self.block_start: self.block_end] = confidence[:, self.block_start: self.block_end] * dynamic_positional_weights
             elif self.positional_weights_type == 'static':
                 confidence[:, self.block_start: self.block_end] = confidence[:, self.block_start: self.block_end] * self.static_positional_weights[current_step]
@@ -125,11 +128,7 @@ class MRSampler(BaseSampler):
             select_N = min((conf_temp > 0).sum().item(), select_N)    # if no masked tokens, exits
             if select_N == 0:
                 GG = True
-            for b in range(conf_temp.shape[0]):
-                if conf_temp[b].max() < self.exploration_threshold:    # If there's no chance to select any seed token, exits
-                    GG = True
-
-            if not GG:
+            else:
                 # applying Soft-NMS to select distant seed tokens
                 # print(f"target select_N: {select_N}")
                 seed_indices = [[] for _ in range(conf_temp.shape[0])]
@@ -141,17 +140,21 @@ class MRSampler(BaseSampler):
                     for i in range(select_N):
                         select_idx = torch.argmax(conf_b).item()
                         # print(f"==> select_idx {select_idx}, conf: {conf_b[select_idx].item()}, token_id: {x[b, select_idx].item()}")
-                        if conf_b[select_idx] <= 0:
-                            select_N -= 1
-                            continue
-                        seed_indices[b].append(select_idx)              # selection
-                        distances = torch.abs(idxs - select_idx)        # suppression
+                        if conf_b[select_idx] <= 0 or conf_temp[b, select_idx] < self.exploration_threshold:
+                            select_N = i
+                            break
+                        seed_indices[b].append(select_idx)  # selection
+                        distances = torch.abs(idxs - select_idx)  # suppression
                         sigma = (conf_b.shape[0] - prompt_len) / select_N / 2
                         gauss_weights = 1 - torch.exp(-torch.pow(distances, 2) / (sigma ** 2))
                         conf_b = conf_b * gauss_weights
                         # print(f"conf_b after soft-NMS: {conf_b[prompt_len:].cpu().numpy()}")
-                seed_indices = torch.Tensor(seed_indices).type(torch.long).to(x.device)
+                if select_N == 0:
+                    GG = True
+                else:
+                    seed_indices = torch.Tensor(seed_indices).type(torch.long).to(x.device)
 
+            if not GG:
                 # 2. form clusters
                 intervals = []
                 exist_new_seed = False
@@ -177,7 +180,8 @@ class MRSampler(BaseSampler):
                         # to left
                         n_consecutive_failures = 0
                         for i in range(left - 1, self.block_start - 1, -1):
-                            if pre_demasked_index[b, i] or conf_temp[b, i] < min(self.exploration_threshold, seed_conf): # hit wall
+                            # min(self.exploration_threshold, seed_conf)
+                            if pre_demasked_index[b, i] or conf_temp[b, i] < self.exploration_threshold: # hit wall
                                 n_consecutive_failures += 1
                                 if n_consecutive_failures > self.exploration_M:
                                     break
@@ -187,7 +191,7 @@ class MRSampler(BaseSampler):
                         # to right
                         n_consecutive_failures = 0
                         for i in range(right + 1, self.block_end):
-                            if pre_demasked_index[b, i] or conf_temp[b, i] < min(self.exploration_threshold, seed_conf): # hit wall
+                            if pre_demasked_index[b, i] or conf_temp[b, i] < self.exploration_threshold: # hit wall
                                 n_consecutive_failures += 1
                                 if n_consecutive_failures > self.exploration_M:
                                     break
@@ -234,7 +238,7 @@ class MRSampler(BaseSampler):
                     if no_advance_n >= 2:
                         break
             else:
-                print(f"curr_step {current_step} GG!!!")
+                print(f"curr_step {current_step} [Exploration] GG!!! (block-{self.num_block} unmasked_ratio: {unmasked_ratio:.2f}) exp_step {exp_step + 1}: select_N = {select_N}, with intervals {memory_intervals}")
                 transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
                 outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
                 confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
@@ -300,7 +304,7 @@ class MRSampler(BaseSampler):
             #     purified_intervals.append((start, end))
         memory_intervals = purified_intervals
 
-        print(f"===== constructed decoding zones: {memory_intervals}")
+        print(f"=====> constructed decoding zones: {memory_intervals}")
         # for visualization
         history_intervals.append([(start - prompt_len, end - prompt_len) for start, end in memory_intervals])
 
@@ -348,10 +352,22 @@ class MRSampler(BaseSampler):
             x0, confidence, org_confidence, _ = self._model_forward(x, prompt_index)
             current_step += 1
             steps_used += 1
-            GG = False
+
+            # mutiplying positional weights
+            # if self.positional_weights_type == 'absolute':
+            #     confidence[:, self.block_start: self.block_end] = confidence[:, self.block_start: self.block_end] * self.absolute_positional_weights[current_step]
+            # elif self.positional_weights_type == 'ratio':
+            #     # MARK
+            #     global_unmasked_ratio = (x[:, prompt_len: ] != self.mask_id).sum().item() / self.gen_length
+            #     dynamic_positional_weights = self.compute_dynamic_positional_weights(self.block_length, global_unmasked_ratio, device=x0.device)
+            #     confidence[:, self.block_start: self.block_end] = confidence[:, self.block_start: self.block_end] * dynamic_positional_weights
+            # elif self.positional_weights_type == 'static':
+            #     confidence[:, self.block_start: self.block_end] = confidence[:, self.block_start: self.block_end] * self.static_positional_weights[current_step]
+            # else:
+            #     pass
 
             confidence[:, 0: self.block_start] = confidence[:, self.block_end:] = -np.inf   # semi support
-            transfer_index = confidence > 0.96   # extreme confidence updating is safe
+            transfer_index = confidence > 0.98   # extreme confidence updating is safe
             # confidence_in_active_zones = torch.where(dynamic_accel_mask, confidence, -np.inf)
 
             # do confidence-base parallel decoding
@@ -494,12 +510,21 @@ class MRSampler(BaseSampler):
             x0, confidence, org_confidence, logits = self._model_forward(x, prompt_index)
             steps_used += 1
 
+            # transfer_index = conf_transfer_index = confidence > 0.98   # extreme confidence updating is safe
+            # n_conf_updated = conf_transfer_index.sum().item()
+
             top2_logits = torch.topk(logits, k=2, dim=-1).values  # (b, l, 2)
             top2_margins = top2_logits[..., 0] - top2_logits[..., 1]  # (b, l)
             top2_margins[:, 0: self.block_start] = top2_margins[:, self.block_end:] = 0  # semi support
+            #print statistics
+            block_top2_margins = top2_margins[:, self.block_start: self.block_end]
+            print(f"==> margins.mean={block_top2_margins.mean().item():.2f}, std={block_top2_margins.std().item():.2f}, "
+                  f"max={block_top2_margins.max().item():.2f}, min={block_top2_margins.min().item():.2f}")
             top2_margins[x != self.mask_id] = 0
+
             transfer_index_margin = (top2_margins > self.mopup_margin_threshold)
 
+            # n_margin_updated = (transfer_index_margin & ~conf_transfer_index).sum().item()
             n_margin_updated = transfer_index_margin.sum().item()
             n_topk_updated = min(num_masked, max(0, self.mopup_speed - n_margin_updated))
             if n_margin_updated > 0:
@@ -686,7 +711,7 @@ class MRSampler(BaseSampler):
 
 def main():
     set_seed(1234)
-    device = 'cuda:0'
+    device = 'cuda:1'
     model_path = "../models/LLaDA-8B-Instruct"
 
     # 4-shot prompt
@@ -711,22 +736,22 @@ def main():
     config = MRSamplerConfig(
         cfg_scale=0.0,
         temperature=0.0,
-        max_exploration_steps=10,
+        max_exploration_steps=7,
         exploration_N=3,
-        exploration_M=2,
-        exploration_threshold=0.1,
+        exploration_M=1,
+        exploration_threshold=0.15,
         acceleration_parallel_method='factor',
         acceleration_threshold=0.9,
         acceleration_low_threshold=0.6,
         acceleration_factor=1,
-        mopup_gate_ratio=0.75,
-        mopup_margin_threshold=3.0,
-        max_mopup_steps=30,
-        mopup_speed=2,
+        mopup_gate_ratio=0.8,
+        mopup_margin_threshold=3,
+        max_mopup_steps=20,
+        mopup_speed=1,
         positional_weights_type='ratio',
         max_weight=1.0,
         initial_min_weight=0.05,
-        ur_factor=1.0
+        ur_factor=1
     )
 
     sampler = MRSampler.from_path(
@@ -738,7 +763,7 @@ def main():
 
     # max_steps = 256
     # block_length = 64
-    max_steps = 128
+    max_steps = 256
     block_lengthes = [128]
     # exploration_thresholds = [0.15, 0.25, 0.4] # -> 0.25 is good for 'fixed', 'factor'
     exploration_thresholds = [0.25]

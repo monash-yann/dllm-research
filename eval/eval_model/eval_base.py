@@ -252,10 +252,13 @@ class BaseEvalHarness(LM):
         for req in tqdm(requests, desc="Generating...", disable=not on_main_process):
             question = req.args[0]
             # treat as base_model on in humaneval dataset
-            if (not self.is_instruct) or ('task_id' in req.doc and str(req.doc['task_id']).lower().startswith('BCKhumaneval')):
+            if (not self.is_instruct) or ('task_id' in req.doc and str(req.doc['task_id']).lower().startswith('humaneval')):
                 prompt_str = question
             else:
-                m = [{"role": "user", "content": question}]
+                m = []
+                if req.doc.get('system_prompt'):
+                    m.append({"role": "system", "content": req.doc['system_prompt']})
+                m.append({"role": "user", "content": question})
                 prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
             prompt = tokenizer(prompt_str, return_tensors="pt").input_ids.to(self.device)
             print(f"\n{'=' * 20} prompt_str: \n{prompt_str} {'=' * 20}")

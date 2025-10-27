@@ -180,7 +180,7 @@ def run_gen_until(
 
 def visualize_MR():
     print(f"visualizing MR Sampler, current path: {os.path.abspath(__file__)}")
-    device = 'cuda:1'
+    device = 'cuda:0'
 
     # 提示词替换，与4-shot的行为保持一致
     # few_shot_filename = "../prompts/gsm8k_shot.txt"
@@ -202,22 +202,22 @@ def visualize_MR():
     config = MRSamplerConfig(
         cfg_scale=0.0,
         temperature=0.0,
-        max_exploration_steps=10,
+        max_exploration_steps=7,
         exploration_N=3,
         exploration_M=2,
-        exploration_threshold=0.1,
+        exploration_threshold=0.2,
         acceleration_parallel_method='factor',
         acceleration_threshold=0.9,
         acceleration_low_threshold=0.6,
         acceleration_factor=1,
-        mopup_gate_ratio=0.75,
-        mopup_margin_threshold=3.0,
-        max_mopup_steps=30,
-        mopup_speed=2,
-        positional_weights_type='ratio',
+        mopup_gate_ratio=0.8,
+        mopup_margin_threshold=3,
+        max_mopup_steps=20,
+        mopup_speed=1,
+        positional_weights_type='none',
         max_weight=1.0,
         initial_min_weight=0.05,
-        ur_factor=1.0
+        ur_factor=1
     )
 
     sampler = MRSampler.from_path(
@@ -230,12 +230,13 @@ def visualize_MR():
     # exploration_thresholds = [0.2, 0.25]  -> No Positionals Weights下, 0.25表现最好
 
     gen_length = 256
-    block_lengthes = [256, 128, 64]
-    exploration_thresholds = [0.15, 0.25]
+    block_lengthes = [128]
+    exploration_thresholds = [0.2, 0.3]
+    sampler.ur_factor = 1.0
     for block_length in block_lengthes:
         for exp_tr in exploration_thresholds:
             sampler.exploration_threshold = exp_tr
-            output_dir = f"imgs/dico+p3_APM{sampler.acceleration_parallel_method}_PWT{sampler.positional_weights_type}_imw${sampler.initial_min_weight}/gsm8k_SL{gen_length}_BL{block_length}/N{sampler.exploration_N}_exptr{exp_tr}/"
+            output_dir = f"imgs/dico1027_APM{sampler.acceleration_parallel_method}_PWT2{sampler.positional_weights_type}_imw${sampler.initial_min_weight}/gsm8k_SL{gen_length}_BL{block_length}/N{sampler.exploration_N}E{sampler.max_exploration_steps}_exptr{exp_tr}/"
             run_gen_until(
                 sampler=sampler,
                 prompts=gsm8k_prompts,
@@ -264,23 +265,25 @@ def visualize_pure_llada():
 
     # 普通0-shot提示词
     gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    gsm8k_prompts = gsm8k_dataset['test']['question'][0:1]
+    gsm8k_prompts = gsm8k_dataset['test']['question'][0:5]
 
-
-    get_local.activate()  # 在引入模型之前，激活装饰器
+    # get_local.activate()  # 在引入模型之前，激活装饰器
     model_path = "../models/LLaDA-8B-Instruct"
+    # model_path = "../models/Dream-7B-Instruct"
     config = PureLLaDASamplerConfig(
         cfg_scale=0.0,
         temperature=0.0,
         positional_weights_type='none',
         max_weight=1.0,
-        initial_min_weight=0.0,
+        initial_min_weight=0.05,
         remasking="low_confidence",
-        decoding_method="topk",
-        k=2
+        decoding_method="fixed",
+        factor=1,
+        k=-1,
+        confidence_threshold=0.9,
     )
 
-    gen_length = 128
+    gen_length = 256
     block_length = 128
     sampler = PureLLaDASampler.from_path(
         model_path=model_path,
@@ -289,7 +292,7 @@ def visualize_pure_llada():
         torch_dtype=torch.bfloat16
     )
 
-    output_dir = f"imgs/pure-MTD${sampler.decoding_method}_${sampler.k if sampler.k!=-1 else ''}/gsm8k_L${gen_length}_B${block_length}/"
+    output_dir = f"imgs/pure_MTD{sampler.decoding_method}{'_'+str(sampler.k) if sampler.decoding_method=='topk' else ''}{'_'+str(sampler.factor) if sampler.decoding_method=='factor' else ''}_PWT_{sampler.positional_weights_type}_imw{sampler.initial_min_weight}/gsm8k_SL{gen_length}_BL{block_length}/"
     run_gen_until(
         sampler=sampler,
         prompts=gsm8k_prompts,
@@ -298,7 +301,7 @@ def visualize_pure_llada():
         block_length=block_length,
         output_dir=output_dir,
         device=device,
-        console_show=False, file_save=True, vis_overall=True, vis_attn_map=True,
+        console_show=False, file_save=True, vis_overall=True, vis_attn_map=False,
     )
 
 if __name__ == "__main__":

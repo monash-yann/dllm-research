@@ -14,13 +14,14 @@ MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 GPU_IDS=(0 1 2 3)
 MASTER_PORT=8086
 
-# gsm8k NUM_FEWSHOT should be 4
-#TASKS="gsm8k"
-#NUM_FEWSHOT=4
 #N_LIMIT=6
 
+# gsm8k NUM_FEWSHOT should be 4
+TASKS="gsm8k"
+NUM_FEWSHOT=4
+
 # humaneval don't have fewshot
-TASKS="humaneval"
+#TASKS="humaneval"
 
 # MBPP has a default(maximum) fewshot number of 3
 #TASKS="mbpp"
@@ -46,6 +47,8 @@ MAX_WEIGHT=1.0
 INITIAL_MIN_WEIGHT=0.0
 REMASKING="low_confidence"
 DECODING_METHOD="topk"
+CONFIDENCE_THRESHOLD=0.9
+FACTOR=1.0
 K=1
 
 MODEL_NAME=$(basename "$MODEL_PATH")
@@ -79,6 +82,8 @@ do
   MODEL_ARGS+=",remasking=$REMASKING"
   MODEL_ARGS+=",decoding_method=$DECODING_METHOD"
   MODEL_ARGS+=",k=$K"
+  MODEL_ARGS+=",confidence_threshold=$CONFIDENCE_THRESHOLD"
+  MODEL_ARGS+=",factor=$FACTOR"
 
   echo "================================================="
   echo "Project Root: $PROJECT_ROOT"

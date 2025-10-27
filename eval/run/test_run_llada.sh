@@ -2,30 +2,43 @@
 
 # 当任何命令失败时立即退出脚本
 set -e
-export CONDA_EXE="/root/miniconda3/bin/conda"
+
 export HF_ENDPOINT=https://hf-mirror.com
 export HF_ALLOW_CODE_EVAL=1
 
-CONDA_ENV_NAME="dico"
-PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
+CONDA_ENV_NAME="llada118"
+PROJECT_ROOT="/homebck/home/xiangzhong_guest/LLADA/llada_sampling_system"
 MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 
 # available gpus
-GPU_IDS=(0 1 2)
+GPU_IDS=(1 2)
 MASTER_PORT=8086
 
-#N_LIMIT=4
 
-TASKS="gsm8k"
-NUM_FEWSHOT=4
+N_LIMIT=20
 
+# gsm8k NUM_FEWSHOT should be 4
+#TASKS="gsm8k"
+#NUM_FEWSHOT=4
+
+# humaneval don't have fewshot
+#TASKS="humaneval_instruct"
+
+# MBPP has a default(maximum) fewshot number of 3
 #TASKS="mbpp"
-
-#TASKS="humaneval"
-
+ 
 # math-500 is a dataset on huggingface
 #TASKS="math-500"
 #INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/math-500/"
+#N_LIMIT=4
+
+#TASKS=mmlu_generative_local
+#INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/mmlu_generative/"
+#NUM_FEWSHOT=2
+
+TASKS=sudoku
+INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/sudoku/"
+NUM_FEWSHOT=2
 
 GPU_LIST=$(IFS=,; echo "${GPU_IDS[*]}")
 NUM_GPUS=${#GPU_IDS[@]}
@@ -34,6 +47,7 @@ NUM_GPUS=${#GPU_IDS[@]}
 # evaluation parameters
 BATCH_SIZE=1
 MC_NUM=128
+
 # sampler parameters
 CFG_SCALE=0.0
 TEMPERATURE=0.0
@@ -41,38 +55,30 @@ POSITIONAL_WEIGHTS_TYPE='none'
 MAX_WEIGHT=1.0
 INITIAL_MIN_WEIGHT=0.0
 REMASKING="low_confidence"
-DECODING_METHOD="fixed"
-FACTOR=1.0
-CONFIDENCE_THRESHOLD=0.9
+DECODING_METHOD="topk"
 K=1
+
+POSITIONAL_WEIGHTS_TYPE='none'
+MAX_WEIGHT=1.0
+INITIAL_MIN_WEIGHT=0.05
+UR_FACTOR=1.0
+
 
 MODEL_NAME=$(basename "$MODEL_PATH")
 
-SL_VALUES=(256)
-
-BLOCK_LENGTH=32
+SL_VALUES=(128)
 
 for SL in "${SL_VALUES[@]}"
 do
-  echo "========================== evaluating SL=${SL}, BL=${BL} =========================="
-
+  echo "========================== evaluating SL=${SL} =========================="
   GEN_LENGTH=$SL
   STEPS=$SL
+  BLOCK_LENGTH=128
 
-  if [ "$DECODING_METHOD" = "fixed" ]; then
-    METHOD_SUFFIX="conf_tr${CONFIDENCE_THRESHOLD}"
-  elif [ "$DECODING_METHOD" = "factor" ]; then
-    METHOD_SUFFIX="factor${FACTOR}"
-  elif [ "$DECODING_METHOD" = "topk" ]; then
-    METHOD_SUFFIX="k${K}"
-  else
-    METHOD_SUFFIX=""
-  fi
-  OUTPUT_DIR="eval/outputs/${MODEL_NAME}_pure_MTD${DECODING_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}_BL${BLOCK_LENGTH}/${METHOD_SUFFIX}"
+  OUTPUT_DIR="eval/outputs/${MODEL_NAME}_testpure_MTD${DECODING_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_ur${UR_FACTOR}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}_BL${BLOCK_LENGTH}"
   rm -rf $OUTPUT_DIR
   mkdir -p $OUTPUT_DIR
 
-  # lm-eval 要求所有自定义模型参数通过一个逗号分隔的字符串传入
   MODEL_ARGS="model_path=$MODEL_PATH"
   MODEL_ARGS+=",output_dir=$OUTPUT_DIR"
   MODEL_ARGS+=",mc_num=$MC_NUM"
@@ -85,11 +91,8 @@ do
   MODEL_ARGS+=",positional_weights_type=$POSITIONAL_WEIGHTS_TYPE"
   MODEL_ARGS+=",max_weight=$MAX_WEIGHT"
   MODEL_ARGS+=",initial_min_weight=$INITIAL_MIN_WEIGHT"
-  MODEL_ARGS+=",block_length=$BLOCK_LENGTH"
   MODEL_ARGS+=",remasking=$REMASKING"
   MODEL_ARGS+=",decoding_method=$DECODING_METHOD"
-  MODEL_ARGS+=",factor=$FACTOR"
-  MODEL_ARGS+=",confidence_threshold=$CONFIDENCE_THRESHOLD"
   MODEL_ARGS+=",k=$K"
 
   echo "================================================="
@@ -97,6 +100,7 @@ do
   echo "Using GPUs: $GPU_LIST (Total: $NUM_GPUS)"
   echo "Model: $MODEL_PATH"
   echo "Tasks: $TASKS"
+  echo "Few-Shot: $NUM_FEWSHOT"
   echo "Model Args: $MODEL_ARGS"
   echo "Output Dir: $OUTPUT_DIR"
   echo "================================================="
@@ -124,4 +128,4 @@ do
         > "${OUTPUT_DIR}/log.txt" 2>&1
 done
 # only in autodl
-/usr/bin/shutdown
+#/usr/bin/shutdown

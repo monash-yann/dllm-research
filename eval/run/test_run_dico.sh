@@ -11,18 +11,18 @@ PROJECT_ROOT="/homebck/home/xiangzhong_guest/LLADA/llada_sampling_system"
 MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 
 # available gpus
-GPU_IDS=(1 2)
+GPU_IDS=(0 1 2)
 MASTER_PORT=8086
 
 
-N_LIMIT=2
+#N_LIMIT=2
 
 # gsm8k NUM_FEWSHOT should be 4
 #TASKS="gsm8k"
 #NUM_FEWSHOT=4
 
 # humaneval don't have fewshot
-#TASKS="humaneval_instruct"
+TASKS="humaneval"
 
 # MBPP has a default(maximum) fewshot number of 3
 #TASKS="mbpp"
@@ -32,9 +32,17 @@ N_LIMIT=2
 #INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/math-500/"
 #N_LIMIT=4
 
-TASKS=mmlu_generative_local
-INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/mmlu_generative/"
-NUM_FEWSHOT=2
+#TASKS=mmlu_generative_local
+#INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/mmlu_generative/"
+#NUM_FEWSHOT=2
+
+#TASKS=sudoku
+#INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/sudoku/"
+#NUM_FEWSHOT=2
+
+#TASKS=countdown
+#INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/countdown/"
+#NUM_FEWSHOT=2
 
 
 GPU_LIST=$(IFS=,; echo "${GPU_IDS[*]}")
@@ -49,15 +57,15 @@ MC_NUM=128
 CFG_SCALE=0.0
 TEMPERATURE=0.0
 MAX_EXPLORATION_STEPS=10
-#EXPLORATION_N_VALUES=(2 1 3)
-EXPLORATION_N=3
+EXPLORATION_N_VALUES=(2 1)
+#EXPLORATION_N=1
 EXPLORATION_M=2
 EXPLORATION_THRESHOLD=0.25
-ACCELERATION_PARALLEL_METHOD='fixed'
+ACCELERATION_PARALLEL_METHOD='factor'
 ACCELERATION_THRESHOLD=0.9
 ACCELERATION_LOW_THRESHOLD=0.6
 ACCELERATION_FACTOR=1
-MOPUP_GATE_RATIO=0.75
+MOPUP_GATE_RATIO=0.8
 MOPUP_MARGIN_THRESHOLD=3.0
 MAX_MOPUP_STEPS=20
 MOPUP_SPEED=2
@@ -70,18 +78,21 @@ UR_FACTOR=1.0
 
 MODEL_NAME=$(basename "$MODEL_PATH")
 
-SL_VALUES=(64)
+SL_VALUES=(256)
 
 for SL in "${SL_VALUES[@]}"
 do
-  echo "========================== evaluating SL=${SL} =========================="
   GEN_LENGTH=$SL
   STEPS=$SL
   BLOCK_LENGTH=64
+  echo "========================== evaluating SL=${SL}, BL=${BLOCK_LENGTH} =========================="
 
-  OUTPUT_DIR="eval/outputs/${MODEL_NAME}_pure_MTD${DECODING_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_ur${UR_FACTOR}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}_BL${BLOCK_LENGTH}"
-  rm -rf $OUTPUT_DIR
-  mkdir -p $OUTPUT_DIR
+  for EXPLORATION_N in "${EXPLORATION_N_VALUES[@]}"
+  do
+    echo "========================== evaluating N=${EXPLORATION_N} =========================="
+    OUTPUT_DIR="eval/outputs/${MODEL_NAME}_testdico_MTD${DECODING_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_ur${UR_FACTOR}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}_BL${BLOCK_LENGTH}/N${EXPLORATION_N}E${MAX_EXPLORATION_STEPS}_gate${MOPUP_GATE_RATIO}_exptr${EXPLORATION_THRESHOLD}_acctr${ACCELERATION_THRESHOLD}_mptr${MOPUP_MARGIN_THRESHOLD}/"
+    rm -rf $OUTPUT_DIR
+    mkdir -p $OUTPUT_DIR
 
     MODEL_ARGS="model_path=$MODEL_PATH"
     MODEL_ARGS+=",mc_num=$MC_NUM"
@@ -109,37 +120,38 @@ do
     MODEL_ARGS+=",initial_min_weight=$INITIAL_MIN_WEIGHT"
     MODEL_ARGS+=",ur_factor=$UR_FACTOR"
 
-  echo "================================================="
-  echo "Project Root: $PROJECT_ROOT"
-  echo "Using GPUs: $GPU_LIST (Total: $NUM_GPUS)"
-  echo "Model: $MODEL_PATH"
-  echo "Tasks: $TASKS"
-  echo "Few-Shot: $NUM_FEWSHOT"
-  echo "Model Args: $MODEL_ARGS"
-  echo "Output Dir: $OUTPUT_DIR"
-  echo "================================================="
+    echo "================================================="
+    echo "Project Root: $PROJECT_ROOT"
+    echo "Using GPUs: $GPU_LIST (Total: $NUM_GPUS)"
+    echo "Model: $MODEL_PATH"
+    echo "Tasks: $TASKS"
+    echo "Few-Shot: $NUM_FEWSHOT"
+    echo "Model Args: $MODEL_ARGS"
+    echo "Output Dir: $OUTPUT_DIR"
+    echo "================================================="
 
-  # --- 启动评估 (关键改动) ---
-  cd "$PROJECT_ROOT" || exit
+    # --- 启动评估 (关键改动) ---
+    cd "$PROJECT_ROOT" || exit
 
-  # 使用 accelerate launch 启动您的评估脚本
-  stdbuf -o0 "$CONDA_EXE" run -n "$CONDA_ENV_NAME" --no-capture-output \
-    CUDA_VISIBLE_DEVICES=$GPU_LIST \
-    accelerate launch \
-      --num_processes $NUM_GPUS \
-      --main_process_port $MASTER_PORT \
-      -m eval.eval_model.eval_MR \
-        --model eval_sampler \
-        --confirm_run_unsafe_code \
-        --tasks $TASKS \
-        ${INCLUDE_PATH:+--include_path $INCLUDE_PATH} \
-        ${NUM_FEWSHOT:+--num_fewshot $NUM_FEWSHOT}\
-        --batch_size $BATCH_SIZE \
-        --model_args $MODEL_ARGS \
-        --log_samples \
-        --output_path $OUTPUT_DIR \
-        ${N_LIMIT:+--limit $N_LIMIT} \
-        > "${OUTPUT_DIR}/log.txt" 2>&1
+    # 使用 accelerate launch 启动您的评估脚本
+    stdbuf -o0 "$CONDA_EXE" run -n "$CONDA_ENV_NAME" --no-capture-output \
+      CUDA_VISIBLE_DEVICES=$GPU_LIST \
+      accelerate launch \
+        --num_processes $NUM_GPUS \
+        --main_process_port $MASTER_PORT \
+        -m eval.eval_model.eval_MR \
+          --model eval_sampler \
+          --confirm_run_unsafe_code \
+          --tasks $TASKS \
+          ${INCLUDE_PATH:+--include_path $INCLUDE_PATH} \
+          ${NUM_FEWSHOT:+--num_fewshot $NUM_FEWSHOT}\
+          --batch_size $BATCH_SIZE \
+          --model_args $MODEL_ARGS \
+          --log_samples \
+          --output_path $OUTPUT_DIR \
+          ${N_LIMIT:+--limit $N_LIMIT} \
+          > "${OUTPUT_DIR}/log.txt" 2>&1
+  done
 done
 # only in autodl
 #/usr/bin/shutdown

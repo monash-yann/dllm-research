@@ -76,7 +76,7 @@ class PureLLaDASampler(BaseSampler):
         confidences = []
         transfer_idxs = []
         phase_states = []  # [{'phase':'exploration/acceleration/mopup', 'range': (start, end)}]
-        exploration_intervals = []  # [{'inceptive_step': 0, 'history_intervals': [[(start, end), ...], [(start, end), ...], ...]}]
+        history_intervals_all = []  # [{'inceptive_step': 0, 'history_intervals': [[(start, end), ...], [(start, end), ...], ...]}]
         accumulated_steps = 0
         prompt_len = prompt.shape[1]
 
@@ -155,7 +155,6 @@ class PureLLaDASampler(BaseSampler):
                             cand_mask = (conf_b > 0)  # (L,)
                             # 根据cand_confs排序cand_idxs
                             cand_idxs = torch.nonzero(cand_mask, as_tuple=False).squeeze(1)  # (n,)
-                            # print(cand_idxs.shape)
                             cand_confs = conf_b[cand_mask]  # (n,)
                             sorted_order = torch.argsort(cand_confs, descending=True)
                             cand_idxs = cand_idxs[sorted_order]
@@ -176,6 +175,7 @@ class PureLLaDASampler(BaseSampler):
                         # print(f"in block {num_block}, step {i}, k={k}.")
                         for b in range(confidence.shape[0]):
                             n_effective = (confidence > 0).sum().item()
+                            # print(f"=================n_effective: {n_effective}., k: {k}, selected_k:{min(k, n_effective)}=================")
                             _, select_index = torch.topk(confidence[b], k=min(k, n_effective))
                             transfer_index[b, select_index] = True
                             # print(f"select_index: {select_index.cpu().numpy()}.")
@@ -223,7 +223,7 @@ class PureLLaDASampler(BaseSampler):
             confidences=confidences,
             transfer_idxs=transfer_idxs,
             phase_states=phase_states,
-            exploration_intervals=exploration_intervals,
+            history_intervals_all=history_intervals_all,
             metrics=metrics,
         )
 
@@ -255,15 +255,15 @@ def main():
         temperature=0.0,
         positional_weights_type='none',
         max_weight=1.0,
-        initial_min_weight=0.0,
+        initial_min_weight=0.05,
         remasking="low_confidence",
-        decoding_method="fixed",
-        k=2,
-        confidence_threshold=0.9,
+        decoding_method="topk",
         factor=1,
+        k=1,
+        confidence_threshold=0.9,
     )
 
-    max_gen_steps = 128
+    max_gen_steps = 256
     block_length = 64
     sampler = PureLLaDASampler.from_path(
         model_path=model_path,

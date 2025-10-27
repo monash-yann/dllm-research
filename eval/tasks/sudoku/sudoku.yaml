@@ -1,29 +1,28 @@
 tag:
-  - math_word_problems
-task: math-500
-dataset_path: HuggingFaceH4/MATH-500
+  - planing_task
+task: sudoku
+dataset_path: csv
+dataset_kwargs:
+  data_files: eval/tasks/sudoku/sudoku.csv
+test_split: train
 process_docs: !function utils.process_docs
 output_type: generate_until
-training_split: null
-test_split: test
 doc_to_text: !function utils.doc_to_text
 process_results: !function utils.process_results
-doc_to_target: "{{answer if few_shot is undefined else solution}}"
+doc_to_target: !function utils.doc_to_target
 generation_kwargs:
   until:
-    - "Problem:"
+    - "Puzzle:"
   do_sample: false
   temperature: 0
 metric_list:
   - metric: exact_match
     aggregation: mean
     higher_is_better: true
-  - metric: math_verify
-    aggregation: mean
-    higher_is_better: true
 metadata:
   version: 3.0
-num_fewshot: 4
+num_fewshot: 5
+fewshot_delimiter: "\n\n"
 fewshot_config:
   sampler: first_n
   samples: !function utils.list_fewshot_samples
