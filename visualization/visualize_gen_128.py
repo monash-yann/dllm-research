@@ -8,15 +8,16 @@ import shutil
 from matplotlib import patches, gridspec
 import matplotlib.pyplot as plt
 
+from sampler.BaseSampler import BaseSampler
 from sampler.MRSampler import MRSampler, MRSamplerConfig, GenerateOutput
-from sampler.PureLLaDASampler import PureLLaDASamplerConfig, PureLLaDASampler
+from sampler.PureDreamSampler import PureDreamSamplerConfig, PureDreamSampler
 from sampler.utils import decode_outputs
 from utils import visualize_overall_steps, plot_decoding_history_on_ax, plot_single_attention_map_on_ax
 
 
 # 绘制控制函数:
 def run_gen_until(
-    sampler: MRSampler,
+    sampler: BaseSampler,
     prompts: list,
     gen_length: int,
     max_steps: int,
@@ -59,7 +60,7 @@ def run_gen_until(
         out = OUT.out
         outputs = OUT.outputs
         phase_states = OUT.phase_states
-        exploration_intervals = OUT.exploration_intervals
+        history_intervals_all = OUT.history_intervals_all
         confidences = OUT.confidences
         transfer_idxs = OUT.transfer_idxs
         metrics = OUT.metrics
@@ -73,10 +74,10 @@ def run_gen_until(
         outputs_decoded = decode_outputs(outputs, tokenizer)
         # 可视化阶段信息准备
         phase_records = None
-        if phase_states is not None and exploration_intervals is not None:
+        if phase_states is not None and history_intervals_all is not None:
             phase_records = {
                 'phase_states': phase_states,
-                'exploration_intervals': exploration_intervals,
+                'history_intervals_all': history_intervals_all,
             }
         n_prompt_tokens = input_ids.shape[1]
 
@@ -292,7 +293,72 @@ def visualize_pure_llada():
         console_show=False, file_save=True, vis_overall=True, vis_attn_map=True,
     )
 
+def visualize_pure_dream():
+    print(f"visualizing pure dream, current path: {os.path.abspath(__file__)}")
+    device = 'cuda:0'
+
+    # 提示词替换，与4-shot的行为保持一致
+    # few_shot_filename = "../prompts/gsm8k_shot.txt"
+    # gsm8k_prompts = []
+    # with open(few_shot_filename, "r", encoding="utf-8") as f:
+    #     for line in f:
+    #         # python会把.txt中的字符当作原始字符串，此处转为普通字符串
+    #         corrected_line = line.replace('\\n', '\n')
+    #         gsm8k_prompts.append(corrected_line)
+    # gsm8k_prompts = gsm8k_prompts[:1]
+
+    # 普通0-shot提示词
+    gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
+    gsm8k_prompts = gsm8k_dataset['test']['question'][0:1]
+
+    # dream token info
+    model_path = "../models/Dream-7B-Instruct"
+    token_info = {
+        'mask_id': 151666,
+        'bos_id': 151665,
+        'pad_id': 151643,
+        'eos_id': 151643,
+        'eot_id': -1
+    }
+
+    # get_local.activate()  # 在引入模型之前，激活装饰器
+    config = PureDreamSamplerConfig(
+        cfg_scale=0.0,
+        temperature=0.0,
+        positional_weights_type='none',
+        max_weight=1.0,
+        initial_min_weight=0.05,
+        remasking="low_confidence",
+        decoding_method="topk",
+        factor=1,
+        k=1,
+        confidence_threshold=0.9,
+        **token_info
+    )
+
+    gen_length = 128
+    block_length = 128
+    sampler = PureDreamSampler.from_path(
+        model_path=model_path,
+        device=device,
+        config=config,
+        torch_dtype=torch.bfloat16
+    )
+
+    output_dir = f"imgs/dream/pure-MTD${sampler.decoding_method}_${sampler.k if sampler.k!=-1 else ''}/gsm8k_L${gen_length}_B${block_length}/"
+    run_gen_until(
+        sampler=sampler,
+        prompts=gsm8k_prompts,
+        max_steps=gen_length,
+        gen_length=gen_length,
+        block_length=block_length,
+        output_dir=output_dir,
+        device=device,
+        console_show=False, file_save=True, vis_overall=True, vis_attn_map=False,
+    )
+
 if __name__ == "__main__":
-    visualize_MR()
+    # visualize_MR()
     # visualize_pure_llada()
+    visualize_pure_dream()
 

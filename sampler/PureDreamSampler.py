@@ -18,7 +18,7 @@ from dataclasses import dataclass, fields, asdict, field
 
 
 @dataclass
-class PureLLaDASamplerConfig(SamplerConfig):
+class PureDreamSamplerConfig(SamplerConfig):
     remasking: Literal["random", "low_confidence"] = "low_confidence"
     decoding_method: Literal["topk", "factor", "fixed"] = "topk"
     k:int = -1
@@ -26,9 +26,9 @@ class PureLLaDASamplerConfig(SamplerConfig):
     confidence_threshold:float = 0.9
 
 
-class PureLLaDASampler(BaseSampler):
+class PureDreamSampler(BaseSampler):
     """
-        PureLLaDASampler
+        PureDreamSampler
         especially focusing on 'low-confidence' self.remasking
     """
 
@@ -49,10 +49,6 @@ class PureLLaDASampler(BaseSampler):
             block_length=256,
             enable_metrics=True,
     ) -> GenerateOutput:
-        """
-        实现“多区域并行置信度驱动解码”思路的主函数。
-        """
-        # 初始化
 
         assert gen_length <= self.model_max_genlength, f"gen_length must <= model_max_genlength({self.model_max_genlength})"
         assert max_steps <= self.model_max_steps, f"max_steps must <= model_max_steps({self.model_max_steps})"
@@ -231,7 +227,6 @@ class PureLLaDASampler(BaseSampler):
 def main():
     set_seed(1234)
     device = 'cuda:0'
-    model_path = "../models/LLaDA-8B-Instruct"
 
     # 4-shot prompt
     # few_shot_filename = "../prompts/gsm8k_shot.txt"
@@ -248,29 +243,20 @@ def main():
 
     # base prompt
     gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    prompts = gsm8k_dataset['test']['question'][0:3]
-
-    # llada token info
-    model_path = "../models/LLaDA-8B-Instruct"
-    token_info = {
-        'mask_id': 126336,
-        'bos_id': 126080,
-        'pad_id': 126081,
-        'eos_id': 126081,
-        'eot_id': 126348
-    }
+    prompts = gsm8k_dataset['test']['question'][0:1]
 
     # dream token info
-    # model_path = "../models/Dream-7B-Instruct"
-    # token_info = {
-    #     'mask_id': 151666,
-    #     'bos_id': 151665,
-    #     'pad_id': 151643,
-    #     'eos_id': 151643,
-    #     'eot_id': -1
-    # }
+    token_info = {
+        'mask_id': 151666,
+        'bos_id': 151665,
+        'pad_id': 151643,
+        'eos_id': 151643,
+        'eot_id': 151643
+    }
 
-    config = PureLLaDASamplerConfig(
+    # get_local.activate()  # 在引入模型之前，激活装饰器
+    model_path = "../models/Dream-7B-Instruct"
+    config = PureDreamSamplerConfig(
         cfg_scale=0.0,
         temperature=0.0,
         positional_weights_type='none',
@@ -284,9 +270,9 @@ def main():
         **token_info
     )
 
-    max_gen_steps = 128
-    block_length = 128
-    sampler = PureLLaDASampler.from_path(
+    max_gen_steps = 64
+    block_length = 64
+    sampler = PureDreamSampler.from_path(
         model_path=model_path,
         device=device,
         config=config,
@@ -301,8 +287,8 @@ def main():
         m = [{"role": "user", "content": prompt_text}]
         prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
         input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
-
         print(prompt_str)
+
         OUT = sampler.generate(input_ids, gen_length=max_gen_steps, max_steps=max_gen_steps, block_length=block_length)
         out = OUT.out
         ans = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
