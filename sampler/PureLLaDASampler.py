@@ -250,6 +250,27 @@ def main():
     gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
     prompts = gsm8k_dataset['test']['question'][0:3]
 
+    # llada token info
+    model_path = "../models/LLaDA-8B-Instruct"
+    token_info = {
+        'mask_id': 126336,
+        'bos_id': 126080,
+        'pad_id': 126081,
+        'eos_id': 126081,
+        'eot_id': 126348
+    }
+
+    # dream token info
+    # model_path = "../models/Dream-7B-Instruct"
+    # token_info = {
+    #     'mask_id': 151666,
+    #     'bos_id': 151665,
+    #     'pad_id': 151643,
+    #     'eos_id': 151643,
+    #     'eot_id': -1
+    # }
+
+
     config = PureLLaDASamplerConfig(
         cfg_scale=0.0,
         temperature=0.0,
@@ -261,10 +282,11 @@ def main():
         factor=1,
         k=1,
         confidence_threshold=0.9,
+        **token_info
     )
 
-    max_gen_steps = 256
-    block_length = 64
+    max_gen_steps = 128
+    block_length = 128
     sampler = PureLLaDASampler.from_path(
         model_path=model_path,
         device=device,

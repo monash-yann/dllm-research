@@ -230,13 +230,13 @@ def visualize_MR():
     # exploration_thresholds = [0.2, 0.25]  -> No Positionals Weights下, 0.25表现最好
 
     gen_length = 256
-    block_lengthes = [128]
+    block_lengthes = [64]
     exploration_thresholds = [0.3]
-    sampler.ur_factor = 1.0
+    sampler.ur_factor = 0.5
     for block_length in block_lengthes:
         for exp_tr in exploration_thresholds:
             sampler.exploration_threshold = exp_tr
-            output_dir = f"imgs/dico1027denseEAconfM_APM{sampler.acceleration_parallel_method}_PWT2{sampler.positional_weights_type}_imw${sampler.initial_min_weight}_ur${sampler.ur_factor}/gsm8k_SL{gen_length}_BL{block_length}/N{sampler.exploration_N}E{sampler.max_exploration_steps}_exptr{exp_tr}/"
+            output_dir = f"imgs/dico1028dyna_denseEAconfM_APM{sampler.acceleration_parallel_method}_PWT2{sampler.positional_weights_type}_imw${sampler.initial_min_weight}_ur${sampler.ur_factor}/gsm8k_SL{gen_length}_BL{block_length}/N{sampler.exploration_N}E{sampler.max_exploration_steps}_exptr{exp_tr}/"
             run_gen_until(
                 sampler=sampler,
                 prompts=gsm8k_prompts,

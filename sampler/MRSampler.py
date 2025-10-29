@@ -105,7 +105,9 @@ class MRSampler(BaseSampler):
             # select_N = max(1, round(self.exploration_N * (np.cos(np.pi/2 * unmasked_ratio))))
             select_N = self.exploration_N
 
+            mask_index = x == self.mask_id
             confidence[:, 0: self.block_start] = confidence[:, self.block_end:] = -np.inf  # semi support
+            confidence[~mask_index] = -np.inf
 
             # mutiplying positional weights
             if self.positional_weights_type == 'absolute':
@@ -113,8 +115,17 @@ class MRSampler(BaseSampler):
             elif self.positional_weights_type == 'ratio':
                 # MARK
                 global_unmasked_ratio = (x[:, prompt_len: ] != self.mask_id).sum().item() / self.gen_length
-                dynamic_positional_weights = self.compute_dynamic_positional_weights(self.block_length, global_unmasked_ratio, device=x0.device)
-                confidence[:, self.block_start: self.block_end] = confidence[:, self.block_start: self.block_end] * dynamic_positional_weights
+                mask_idxs_in_block = torch.where(mask_index[:, self.block_start:self.block_end])[1]
+                # dynamic length_for_weighting: from first masked token to block end
+                first_mask_idx_in_block = mask_idxs_in_block[0].item() if mask_idxs_in_block.numel() > 0 else self.block_length
+                length_for_weighting = self.block_end - (self.block_start + first_mask_idx_in_block)
+                # print(f"first_mask_idx_in_block: {first_mask_idx_in_block}, abs: {self.block_start+first_mask_idx_in_block}, length_for_weighting: {length_for_weighting}")
+                # print(f"{'!'*10} length_for_weighting: {length_for_weighting}, block_start: {self.block_start}, block_end: {self.block_end}, first_mask_idx_in_block: {first_mask_idx_in_block} {'!'*10}")
+                if length_for_weighting == 0:
+                    GG = True
+                else:
+                    dynamic_positional_weights = self.compute_dynamic_positional_weights(length_for_weighting, global_unmasked_ratio, device=x0.device)
+                    confidence[:, self.block_start+first_mask_idx_in_block: self.block_end] = confidence[:, self.block_start+first_mask_idx_in_block: self.block_end] * dynamic_positional_weights
             elif self.positional_weights_type == 'static':
                 confidence[:, self.block_start: self.block_end] = confidence[:, self.block_start: self.block_end] * self.static_positional_weights[current_step]
             else:
@@ -123,8 +134,7 @@ class MRSampler(BaseSampler):
             # seed tokens -> local clusters
             # 1. identify seed tokens
             conf_temp = confidence.clone()
-            mask_index = (x == self.mask_id)
-            conf_temp[~mask_index] = -np.inf
+            # conf_temp[~mask_index] = -np.inf
             select_N = min((conf_temp > 0).sum().item(), select_N)    # if no masked tokens, exits
             if select_N == 0:
                 GG = True
@@ -145,7 +155,8 @@ class MRSampler(BaseSampler):
                             break
                         seed_indices[b].append(select_idx)  # selection
                         distances = torch.abs(idxs - select_idx)  # suppression
-                        sigma = (conf_b.shape[0] - prompt_len) / select_N / 2
+                        # sigma = (conf_b.shape[0] - prompt_len) / select_N / 2
+                        sigma = self.block_length / 2 / 1.5
                         gauss_weights = 1 - torch.exp(-torch.pow(distances, 2) / (sigma ** 2))
                         conf_b = conf_b * gauss_weights
                         # print(f"conf_b after soft-NMS: {conf_b[prompt_len:].cpu().numpy()}")
@@ -527,20 +538,22 @@ class MRSampler(BaseSampler):
             # transfer_index = conf_transfer_index = confidence > 0.98   # extreme confidence updating is safe
             # n_conf_updated = conf_transfer_index.sum().item()
 
-            # top2_logits = torch.topk(logits, k=2, dim=-1).values  # (b, l, 2)
-            # top2_margins = top2_logits[..., 0] - top2_logits[..., 1]  # (b, l)
-            # top2_margins[:, 0: self.block_start] = top2_margins[:, self.block_end:] = 0  # semi support
-            # #print statistics
-            # block_top2_margins = top2_margins[:, self.block_start: self.block_end]
-            # print(f"==> margins.mean={block_top2_margins.mean().item():.2f}, std={block_top2_margins.std().item():.2f}, "
-            #       f"max={block_top2_margins.max().item():.2f}, min={block_top2_margins.min().item():.2f}")
-            # top2_margins[x != self.mask_id] = 0
-            #
-            # transfer_index_margin = (top2_margins > self.mopup_margin_threshold)
+            # Use Margin update
+            top2_logits = torch.topk(logits, k=2, dim=-1).values  # (b, l, 2)
+            top2_margins = top2_logits[..., 0] - top2_logits[..., 1]  # (b, l)
+            top2_margins[:, 0: self.block_start] = top2_margins[:, self.block_end:] = 0  # semi support
+            #print statistics
+            block_top2_margins = top2_margins[:, self.block_start: self.block_end]
+            print(f"==> margins.mean={block_top2_margins.mean().item():.2f}, std={block_top2_margins.std().item():.2f}, "
+                  f"max={block_top2_margins.max().item():.2f}, min={block_top2_margins.min().item():.2f}")
+            top2_margins[x != self.mask_id] = 0
+
+            transfer_index_margin = (top2_margins > self.mopup_margin_threshold) | (confidence > 0.98)
 
             # Test Fixed conf update
-            transfer_index_margin = confidence > self.acceleration_threshold
+            # transfer_index_margin = confidence > self.acceleration_threshold
             # n_margin_updated = (transfer_index_margin & ~conf_transfer_index).sum().item()
+
             n_margin_updated = transfer_index_margin.sum().item()
             n_topk_updated = min(num_masked, max(0, self.mopup_speed - n_margin_updated))
             if n_margin_updated > 0:
@@ -554,7 +567,7 @@ class MRSampler(BaseSampler):
             x[transfer_index] = x0[transfer_index]
             num_masked = (x[:, self.block_start: self.block_end] == self.mask_id).sum().item()
 
-            print(f"curr_step {current_step + i + 1} [Mop-up] (block-{self.num_block} unmasked_ratio: {num_masked / self.block_length:.2f}): n_updated({transfer_index.sum().item()}) = n_margin_updated({n_margin_updated}) + n_topk_updated({n_topk_updated})")
+            print(f"curr_step {current_step + i + 1} [Mop-up] (block-{self.num_block} unmasked_ratio: {1 - num_masked/self.block_length:.2f}): n_updated({transfer_index.sum().item()}) = n_margin_updated({n_margin_updated}) + n_topk_updated({n_topk_updated})")
 
             outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
             confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
@@ -728,7 +741,6 @@ class MRSampler(BaseSampler):
 def main():
     set_seed(1234)
     device = 'cuda:1'
-    model_path = "../models/LLaDA-8B-Instruct"
 
     # 4-shot prompt
     # few_shot_filename = "../prompts/gsm8k_shot.txt"
@@ -736,26 +748,48 @@ def main():
     #     prompts= f.readlines()[0:3]
 
     # base gsm8k prompt
-    gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    prompts = gsm8k_dataset['test']['question'][0:3]
+    # gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
+    # prompts = gsm8k_dataset['test']['question'][0:3]
 
     # base humaneval prompt
-    # humaneval_dataset = load_dataset('openai/openai_humaneval')
-    # prompts = humaneval_dataset['test']['prompt'][:5]
+    humaneval_dataset = load_dataset('openai/openai_humaneval')
+    prompts = humaneval_dataset['test']['prompt'][99:101]
+
+
+    # llada token info
+    model_path = "../models/LLaDA-8B-Instruct"
+    token_info = {
+        'mask_id': 126336,
+        'bos_id': 126080,
+        'pad_id': 126081,
+        'eos_id': 126081,
+        'eot_id': 126348
+    }
+
+    # dream token info
+    # model_path = "../models/Dream-7B-Instruct"
+    # token_info = {
+    #     'mask_id': 151666,
+    #     'bos_id': 151665,
+    #     'pad_id': 151643,
+    #     'eos_id': 151643,
+    #     'eot_id': -1
+    # }
 
     # prompts = [
     #     "你知道周杰伦吗",
     #     "请写一首关于春天的诗",
     #     "请用Python写一个冒泡排序算法",
     # ]
-    # --- 使用类进行生成 ---
+
     config = MRSamplerConfig(
+        **token_info,
         cfg_scale=0.0,
         temperature=0.0,
-        max_exploration_steps=7,
-        exploration_N=3,
-        exploration_M=1,
-        exploration_threshold=0.15,
+        max_exploration_steps=5,
+        exploration_N=4,
+        exploration_M=2,
+        exploration_threshold=0.3,
         acceleration_parallel_method='factor',
         acceleration_threshold=0.9,
         acceleration_low_threshold=0.6,
@@ -767,7 +801,7 @@ def main():
         positional_weights_type='ratio',
         max_weight=1.0,
         initial_min_weight=0.05,
-        ur_factor=1
+        ur_factor=0.5
     )
 
     sampler = MRSampler.from_path(
@@ -780,7 +814,7 @@ def main():
     # max_steps = 256
     # block_length = 64
     max_steps = 256
-    block_lengthes = [128]
+    block_lengthes = [64]
     # exploration_thresholds = [0.15, 0.25, 0.4] # -> 0.25 is good for 'fixed', 'factor'
     exploration_thresholds = [0.3]
 
@@ -788,10 +822,10 @@ def main():
         print('=' * 20 + f" Generating prompt_idx: {i} " + "=" * 20)
         tokenizer = sampler.tokenizer
 
-        m = [{"role": "user", "content": prompt_text}]
-        prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
-        input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
-        # input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
+        # m = [{"role": "user", "content": prompt_text}]
+        # prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
+        # input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
+        input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
 
         for block_length in block_lengthes:
             print('=' * 20 + f" block_length: {block_length} " + "=" * 20)

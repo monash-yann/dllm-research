@@ -17,11 +17,11 @@ MASTER_PORT=8086
 #N_LIMIT=6
 
 # gsm8k NUM_FEWSHOT should be 4
-TASKS="gsm8k"
-NUM_FEWSHOT=4
+#TASKS="gsm8k"
+#NUM_FEWSHOT=4
 
 # humaneval don't have fewshot
-#TASKS="humaneval"
+TASKS="humaneval"
 
 # MBPP has a default(maximum) fewshot number of 3
 #TASKS="mbpp"

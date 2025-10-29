@@ -22,7 +22,9 @@ class SamplerConfig:
     temperature: float = 0.0
     # Special token ids
     mask_id: int = 126336
-    endoftext_id: int = 126081
+    bos_id: int = 126080
+    pad_id: int = 126081
+    eos_id: int = 126081
     eot_id: int = 126348
     # Generation general config
     model_max_genlength: int = 2048
@@ -144,6 +146,7 @@ class BaseSampler:
         max_weight = self.max_weight
         initial_min_weight = self.initial_min_weight
 
+        assert gen_length >= 0, f"gen_length={gen_length}, it must > 0"
         if gen_length == 1:
             return torch.full((gen_length,), max_weight, device=device, dtype=dtype)
 
@@ -177,6 +180,7 @@ class BaseSampler:
             trust_remote_code=True,
             torch_dtype=torch_dtype
         )
+        print(model)
         if device is not None:
             model.to(device=device)
         model.eval()
