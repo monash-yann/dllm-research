@@ -1,6 +1,7 @@
 from abc import abstractmethod
 from typing import List, Tuple, Dict, Any, Literal
 from torch import Tensor
+import pathlib
 
 import torch
 import time
@@ -34,6 +35,8 @@ class SamplerConfig:
     max_weight: float = 1.0
     initial_min_weight: float = 0.05
     ur_factor: float = 1.2
+    # dllm type
+    dllm_type: Literal['llada', 'dream'] = 'llada'
 
 @dataclass
 class GenerationMetrics:
@@ -172,7 +175,12 @@ class BaseSampler:
             device: str | None = None,
             torch_dtype: torch.dtype = torch.bfloat16,
     ):
-        print(f"Loading model and tokenizer from path: {model_path}")
+        model_name = pathlib.Path(model_path).name.lower()
+        if model_name.startswith("llada"):
+            config.dllm_type = 'llada'
+        elif model_name.startswith("dream"):
+            config.dllm_type = 'dream'
+        print(f"Loading model and tokenizer from path: {model_path}, dllm_type: {config.dllm_type}")
 
         # get_local.activate()  # 在引入模型之前，激活装饰器
         model = AutoModel.from_pretrained(
@@ -180,7 +188,7 @@ class BaseSampler:
             trust_remote_code=True,
             torch_dtype=torch_dtype
         )
-        print(model)
+        # print(model)
         if device is not None:
             model.to(device=device)
         model.eval()
@@ -189,6 +197,7 @@ class BaseSampler:
             model_path,
             trust_remote_code=True
         )
+
 
         return cls(model=model, tokenizer=tokenizer, config=config)
 

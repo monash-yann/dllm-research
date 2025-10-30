@@ -49,10 +49,6 @@ class PureLLaDASampler(BaseSampler):
             block_length=256,
             enable_metrics=True,
     ) -> GenerateOutput:
-        """
-        实现“多区域并行置信度驱动解码”思路的主函数。
-        """
-        # 初始化
 
         assert gen_length <= self.model_max_genlength, f"gen_length must <= model_max_genlength({self.model_max_genlength})"
         assert max_steps <= self.model_max_steps, f"max_steps must <= model_max_steps({self.model_max_steps})"
@@ -110,6 +106,11 @@ class PureLLaDASampler(BaseSampler):
                 else:
                     logits = self.model(x).logits
                 logits_with_noise = add_gumbel_noise(logits, temperature=self.temperature)
+                if self.dllm_type == 'llada':
+                    pass
+                elif self.dllm_type == 'dream':
+                    logits_with_noise = torch.cat([logits_with_noise[:, :1], logits_with_noise[:, :-1]], dim=1)
+
                 x0 = torch.argmax(logits_with_noise, dim=-1)  # b, l
                 accumulated_steps += 1
 
@@ -243,32 +244,34 @@ def main():
     #         prompts.append(corrected_line)
     # prompts = [codecs.decode(line, 'unicode_escape') for line in lines]
 
-    # prompts = [prompts[2], prompts[6]]
-    # prompts = [prompts[0]]
 
     # base prompt
-    gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    prompts = gsm8k_dataset['test']['question'][0:3]
+    # gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
+    # prompts = gsm8k_dataset['test']['question'][0:3]
 
-    # llada token info
-    model_path = "../models/LLaDA-8B-Instruct"
-    token_info = {
-        'mask_id': 126336,
-        'bos_id': 126080,
-        'pad_id': 126081,
-        'eos_id': 126081,
-        'eot_id': 126348
-    }
+    # base humaneval prompt
+    humaneval_dataset = load_dataset('openai/openai_humaneval')
+    prompts = humaneval_dataset['test']['prompt'][99:101]
 
-    # dream token info
-    # model_path = "../models/Dream-7B-Instruct"
+    # use llada
+    # model_path = "../models/LLaDA-8B-Instruct"
     # token_info = {
-    #     'mask_id': 151666,
-    #     'bos_id': 151665,
-    #     'pad_id': 151643,
-    #     'eos_id': 151643,
-    #     'eot_id': -1
+    #     'mask_id': 126336,
+    #     'bos_id': 126080,
+    #     'pad_id': 126081,
+    #     'eos_id': 126081,
+    #     'eot_id': 126348
     # }
+
+    # use dream
+    model_path = "../models/Dream-7B-Instruct"
+    token_info = {
+        'mask_id': 151666,
+        'bos_id': 151665,
+        'pad_id': 151643,
+        'eos_id': 151643,
+        'eot_id': -1
+    }
 
     config = PureLLaDASamplerConfig(
         cfg_scale=0.0,
@@ -298,11 +301,13 @@ def main():
         tokenizer = sampler.tokenizer
 
         # print(prompt_text)
-        m = [{"role": "user", "content": prompt_text}]
-        prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
-        input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
+        # m = [{"role": "user", "content": prompt_text}]
+        # prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
+        # input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
+        input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
 
-        print(prompt_str)
+        print(prompt_text)
+
         OUT = sampler.generate(input_ids, gen_length=max_gen_steps, max_steps=max_gen_steps, block_length=block_length)
         out = OUT.out
         ans = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]

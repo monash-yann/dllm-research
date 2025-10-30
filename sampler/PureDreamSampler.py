@@ -106,7 +106,9 @@ class PureDreamSampler(BaseSampler):
                 else:
                     logits = self.model(x).logits
                 logits_with_noise = add_gumbel_noise(logits, temperature=self.temperature)
-                x0 = torch.argmax(logits_with_noise, dim=-1)  # b, l
+                logits = torch.cat([logits_with_noise[:, :1], logits_with_noise[:, :-1]], dim=1)
+
+                x0 = torch.argmax(logits, dim=-1)  # b, l
                 accumulated_steps += 1
 
                 # demask & remask
@@ -187,6 +189,7 @@ class PureDreamSampler(BaseSampler):
 
                 x[transfer_index] = x0[transfer_index]
                 # print(f"step: {accumulated_steps}, block: {num_block}, i: {i}, n_transferred: {transfer_index.sum().item()}.")
+                # print(f"answer in step {accumulated_steps}: {self.tokenizer.batch_decode(x[:, prompt_len:], skip_special_tokens=True)[0]}")
 
                 # collecting states
                 outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
@@ -222,7 +225,6 @@ class PureDreamSampler(BaseSampler):
             history_intervals_all=history_intervals_all,
             metrics=metrics,
         )
-
 
 def main():
     set_seed(1234)
@@ -263,7 +265,7 @@ def main():
         max_weight=1.0,
         initial_min_weight=0.05,
         remasking="low_confidence",
-        decoding_method="topk",
+        decoding_method="fixed",
         factor=1,
         k=1,
         confidence_threshold=0.9,

@@ -11,21 +11,22 @@ PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
 MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
 
 # available gpus
-GPU_IDS=(0 1 2 3 4)
+GPU_IDS=(0 1 2)
 MASTER_PORT=8086
 
 #N_LIMIT=4
 
-#TASKS="gsm8k"
-#NUM_FEWSHOT=4
+TASKS="gsm8k"
+NUM_FEWSHOT=4
 
 #TASKS="humaneval"
 
-TASKS="mbpp"
+#TASKS="mbpp"
 
 # math-500 is a dataset on huggingface
 #TASKS="math-500"
 #INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/math-500/"
+#NUM_FEWSHOT=4
 
 #TASKS=sudoku
 #INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/sudoku/"
@@ -54,7 +55,7 @@ MODEL_NAME=$(basename "$MODEL_PATH")
 
 SL_VALUES=(256)
 
-BLOCK_LENGTHES=(128)
+BLOCK_LENGTHES=(256)
 
 for SL in "${SL_VALUES[@]}"
 do
@@ -130,3 +131,4 @@ do
 done
 # only in autodl
 /usr/bin/shutdown
+shutdown
