@@ -216,8 +216,14 @@ class BaseSampler:
             logits = un_logits + (self.cfg_scale + 1) * (logits - un_logits)
         else:
             logits = self.model(x).logits
+        if self.dllm_type == 'llada':
+            pass
+        elif self.dllm_type == 'dream':
+            logits = torch.cat([logits[:, :1], logits[:, :-1]], dim=1)
 
         logits_with_noise = add_gumbel_noise(logits, self.temperature)
+
+
         x0 = torch.argmax(logits_with_noise, dim=-1)
         p = F.softmax(logits, dim=-1)
         x0_p = torch.gather(p, dim=-1, index=x0.unsqueeze(-1)).squeeze(-1)

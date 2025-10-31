@@ -10,7 +10,6 @@ import matplotlib.pyplot as plt
 
 from sampler.BaseSampler import BaseSampler
 from sampler.MRSampler import MRSampler, MRSamplerConfig, GenerateOutput
-from sampler.PureDreamSampler import PureDreamSamplerConfig, PureDreamSampler
 from sampler.utils import decode_outputs
 from utils import visualize_overall_steps, plot_decoding_history_on_ax, plot_single_attention_map_on_ax
 

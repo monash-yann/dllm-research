@@ -5,7 +5,6 @@ import torch
 import time
 import math
 import numpy as np
-import torch.nn.functional as F
 
 from transformers import AutoTokenizer, AutoModel, PreTrainedModel, PreTrainedTokenizer
 from datasets import load_dataset
@@ -755,26 +754,25 @@ def main():
     humaneval_dataset = load_dataset('openai/openai_humaneval')
     prompts = humaneval_dataset['test']['prompt'][99:101]
 
-
     # llada token info
-    model_path = "../models/LLaDA-8B-Instruct"
-    token_info = {
-        'mask_id': 126336,
-        'bos_id': 126080,
-        'pad_id': 126081,
-        'eos_id': 126081,
-        'eot_id': 126348
-    }
+    # model_path = "../models/LLaDA-8B-Instruct"
+    # token_info = {
+    #     'mask_id': 126336,
+    #     'bos_id': 126080,
+    #     'pad_id': 126081,
+    #     'eos_id': 126081,
+    #     'eot_id': 126348
+    # }
 
     # dream token info
-    # model_path = "../models/Dream-7B-Instruct"
-    # token_info = {
-    #     'mask_id': 151666,
-    #     'bos_id': 151665,
-    #     'pad_id': 151643,
-    #     'eos_id': 151643,
-    #     'eot_id': -1
-    # }
+    model_path = "../models/Dream-7B-Instruct"
+    token_info = {
+        'mask_id': 151666,
+        'bos_id': 151665,
+        'pad_id': 151643,
+        'eos_id': 151643,
+        'eot_id': 151643
+    }
 
     # prompts = [
     #     "你知道周杰伦吗",
@@ -813,8 +811,8 @@ def main():
 
     # max_steps = 256
     # block_length = 64
-    max_steps = 256
-    block_lengthes = [64]
+    max_steps = 128
+    block_lengthes = [128]
     # exploration_thresholds = [0.15, 0.25, 0.4] # -> 0.25 is good for 'fixed', 'factor'
     exploration_thresholds = [0.3]
 
@@ -822,10 +820,10 @@ def main():
         print('=' * 20 + f" Generating prompt_idx: {i} " + "=" * 20)
         tokenizer = sampler.tokenizer
 
-        # m = [{"role": "user", "content": prompt_text}]
-        # prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
-        # input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
-        input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
+        m = [{"role": "user", "content": prompt_text}]
+        prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
+        input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
+        # input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
 
         for block_length in block_lengthes:
             print('=' * 20 + f" block_length: {block_length} " + "=" * 20)

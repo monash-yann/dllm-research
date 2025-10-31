@@ -198,7 +198,18 @@ def visualize_MR():
     humaneval_prompts = humaneval_dataset['test']['prompt'][:5]
 
     # get_local.activate()  # 在引入模型之前，激活装饰器
-    model_path = "../models/LLaDA-8B-Instruct"
+    # model_path = "../models/LLaDA-8B-Instruct"
+
+    # dream token info
+    model_path = "../models/Dream-7B-Instruct"
+    token_info = {
+        'mask_id': 151666,
+        'bos_id': 151665,
+        'pad_id': 151643,
+        'eos_id': 151643,
+        'eot_id': 151643
+    }
+
     config = MRSamplerConfig(
         cfg_scale=0.0,
         temperature=0.0,
@@ -214,10 +225,11 @@ def visualize_MR():
         mopup_margin_threshold=3,
         max_mopup_steps=20,
         mopup_speed=1,
-        positional_weights_type='ratio',
+        positional_weights_type='none',
         max_weight=1.0,
         initial_min_weight=0.05,
-        ur_factor=1.5
+        ur_factor=1.5,
+        **token_info
     )
 
     sampler = MRSampler.from_path(
@@ -236,7 +248,7 @@ def visualize_MR():
     for block_length in block_lengthes:
         for exp_tr in exploration_thresholds:
             sampler.exploration_threshold = exp_tr
-            output_dir = f"imgs/dico1028dyna_denseEAconfM_APM{sampler.acceleration_parallel_method}_PWT2{sampler.positional_weights_type}_imw${sampler.initial_min_weight}_ur${sampler.ur_factor}/gsm8k_SL{gen_length}_BL{block_length}/N{sampler.exploration_N}E{sampler.max_exploration_steps}_exptr{exp_tr}/"
+            output_dir = f"imgs/dream/dico1031dyna_denseEAconfM_APM{sampler.acceleration_parallel_method}_PWT2{sampler.positional_weights_type}_imw${sampler.initial_min_weight}_ur${sampler.ur_factor}/gsm8k_SL{gen_length}_BL{block_length}/N{sampler.exploration_N}E{sampler.max_exploration_steps}_exptr{exp_tr}/"
             run_gen_until(
                 sampler=sampler,
                 prompts=gsm8k_prompts,
@@ -247,7 +259,6 @@ def visualize_MR():
                 device=device,
                 console_show=False, file_save=True, vis_overall=True, vis_attn_map=False
             )
-
 
 def visualize_pure_llada():
     print(f"visualizing pure llada, current path: {os.path.abspath(__file__)}")
@@ -304,7 +315,71 @@ def visualize_pure_llada():
         console_show=False, file_save=True, vis_overall=True, vis_attn_map=False,
     )
 
+def visualize_pure_dream():
+    print(f"visualizing pure llada, current path: {os.path.abspath(__file__)}")
+    device = 'cuda:0'
+
+    # 提示词替换，与4-shot的行为保持一致
+    # few_shot_filename = "../prompts/gsm8k_shot.txt"
+    # gsm8k_prompts = []
+    # with open(few_shot_filename, "r", encoding="utf-8") as f:
+    #     for line in f:
+    #         # python会把.txt中的字符当作原始字符串，此处转为普通字符串
+    #         corrected_line = line.replace('\\n', '\n')
+    #         gsm8k_prompts.append(corrected_line)
+    # gsm8k_prompts = gsm8k_prompts[:1]
+
+    # 普通0-shot提示词
+    gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
+    gsm8k_prompts = gsm8k_dataset['test']['question'][0:3]
+
+    gen_length = 256
+    block_length = 128
+
+    # get_local.activate()  # 在引入模型之前，激活装饰器
+    # dream token info
+    model_path = "../models/Dream-7B-Instruct"
+    token_info = {
+        'mask_id': 151666,
+        'bos_id': 151665,
+        'pad_id': 151643,
+        'eos_id': 151643,
+        'eot_id': 151643
+    }
+    config = PureLLaDASamplerConfig(
+        cfg_scale=0.0,
+        temperature=0.0,
+        positional_weights_type='none',
+        max_weight=1.0,
+        initial_min_weight=0.05,
+        remasking="low_confidence",
+        decoding_method="topk",
+        factor=1,
+        k=1,
+        confidence_threshold=0.9,
+        **token_info
+    )
+    sampler = PureLLaDASampler.from_path(
+        model_path=model_path,
+        device=device,
+        config=config,
+        torch_dtype=torch.bfloat16,
+    )
+
+    output_dir = f"imgs/dream/pure_MTD{sampler.decoding_method}{'_'+str(sampler.k) if sampler.decoding_method=='topk' else ''}{'_'+str(sampler.factor) if sampler.decoding_method=='factor' else ''}_PWT_{sampler.positional_weights_type}_imw{sampler.initial_min_weight}/gsm8k_SL{gen_length}_BL{block_length}/"
+    run_gen_until(
+        sampler=sampler,
+        prompts=gsm8k_prompts,
+        max_steps=gen_length,
+        gen_length=gen_length,
+        block_length=block_length,
+        output_dir=output_dir,
+        device=device,
+        console_show=False, file_save=True, vis_overall=True, vis_attn_map=False,
+    )
+
 if __name__ == "__main__":
-    visualize_MR()
+    # visualize_MR()
     # visualize_pure_llada()
+    visualize_pure_dream()
 

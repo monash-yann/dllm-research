@@ -105,11 +105,11 @@ class PureLLaDASampler(BaseSampler):
                     logits = un_logits + (self.cfg_scale + 1) * (logits - un_logits)
                 else:
                     logits = self.model(x).logits
-                logits_with_noise = add_gumbel_noise(logits, temperature=self.temperature)
                 if self.dllm_type == 'llada':
                     pass
                 elif self.dllm_type == 'dream':
-                    logits_with_noise = torch.cat([logits_with_noise[:, :1], logits_with_noise[:, :-1]], dim=1)
+                    logits = torch.cat([logits[:, :1], logits[:, :-1]], dim=1)
+                logits_with_noise = add_gumbel_noise(logits, temperature=self.temperature)
 
                 x0 = torch.argmax(logits_with_noise, dim=-1)  # b, l
                 accumulated_steps += 1
@@ -231,7 +231,7 @@ class PureLLaDASampler(BaseSampler):
 
 def main():
     set_seed(1234)
-    device = 'cuda:0'
+    device = 'cuda:1'
     model_path = "../models/LLaDA-8B-Instruct"
 
     # 4-shot prompt
@@ -251,7 +251,7 @@ def main():
 
     # base humaneval prompt
     humaneval_dataset = load_dataset('openai/openai_humaneval')
-    prompts = humaneval_dataset['test']['prompt'][99:101]
+    prompts = humaneval_dataset['test']['prompt'][0:3]
 
     # use llada
     # model_path = "../models/LLaDA-8B-Instruct"
@@ -270,7 +270,7 @@ def main():
         'bos_id': 151665,
         'pad_id': 151643,
         'eos_id': 151643,
-        'eot_id': -1
+        'eot_id': 151643
     }
 
     config = PureLLaDASamplerConfig(
@@ -287,8 +287,8 @@ def main():
         **token_info
     )
 
-    max_gen_steps = 128
-    block_length = 128
+    max_gen_steps = 256
+    block_length = 256
     sampler = PureLLaDASampler.from_path(
         model_path=model_path,
         device=device,
@@ -300,13 +300,13 @@ def main():
         print('=' * 20 + f" Generating prompt_idx: {i} " + "=" * 20)
         tokenizer = sampler.tokenizer
 
-        # print(prompt_text)
+        print(prompt_text)
         # m = [{"role": "user", "content": prompt_text}]
         # prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
         # input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
         input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
 
-        print(prompt_text)
+        # print(prompt_text)
 
         OUT = sampler.generate(input_ids, gen_length=max_gen_steps, max_steps=max_gen_steps, block_length=block_length)
         out = OUT.out
