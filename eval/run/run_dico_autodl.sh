@@ -8,10 +8,24 @@ export HF_ALLOW_CODE_EVAL=1
 
 CONDA_ENV_NAME="dico"
 PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
-MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
+
+#MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
+#MASK_ID=126336
+#BOS_ID=126080
+#PAD_ID=126081
+#EOS_ID=126081
+#EOT_ID=126348
+
+MODEL_PATH="$PROJECT_ROOT/models/Dream-7B-Instruct"
+MASK_ID=151666
+BOS_ID=151665
+PAD_ID=151643
+EOS_ID=151643
+EOT_ID=151643
+
 
 # available gpus
-GPU_IDS=(0 1)
+GPU_IDS=(0 1 2 3)
 MASTER_PORT=8086
 
 #N_LIMIT=48
@@ -19,13 +33,13 @@ MASTER_PORT=8086
 #TASKS="gsm8k"
 #NUM_FEWSHOT=4
 
-TASKS="humaneval"
+#TASKS="humaneval"
 
 #TASKS="mbpp"
 
-#TASKS="math-500"
-#INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/math-500/"
-#NUM_FEWSHOT=4
+TASKS="math-500"
+INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/math-500/"
+NUM_FEWSHOT=4
 
 #TASKS="sudoku"
 #INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/sudoku/"
@@ -43,11 +57,10 @@ CFG_SCALE=0.0
 TEMPERATURE=0.0
 MAX_EXPLORATION_STEPS=5
 EXPLORATION_N_VALUES=(8)
-#EXPLORATION_N_VALUES=(8)
 #EXPLORATION_N_VALUES=(7)
 EXPLORATION_M=2
 EXPLORATION_THRESHOLD=0.3
-ACCELERATION_PARALLEL_METHOD='fixed'
+ACCELERATION_PARALLEL_METHOD='factor'
 ACCELERATION_THRESHOLD=0.95
 ACCELERATION_LOW_THRESHOLD=0.6
 ACCELERATION_FACTOR=1
@@ -64,7 +77,6 @@ UR_FACTOR=0.5
 MODEL_NAME=$(basename "$MODEL_PATH")
 
 SL_VALUES=(256)
-
 BLOCK_LENGTHES=(256)
 
 for SL in "${SL_VALUES[@]}"
@@ -106,6 +118,12 @@ do
       MODEL_ARGS+=",max_weight=$MAX_WEIGHT"
       MODEL_ARGS+=",initial_min_weight=$INITIAL_MIN_WEIGHT"
       MODEL_ARGS+=",ur_factor=$UR_FACTOR"
+
+      MODEL_ARGS+=${MASK_ID:+,mask_id=$MASK_ID}
+      MODEL_ARGS+=${BOS_ID:+,bos_id=$BOS_ID}
+      MODEL_ARGS+=${PAD_ID:+,pad_id=$PAD_ID}
+      MODEL_ARGS+=${EOS_ID:+,eos_id=$EOS_ID}
+      MODEL_ARGS+=${EOT_ID:+,eot_id=$EOT_ID}
 
       echo "================================================="
       echo "Project Root: $PROJECT_ROOT"

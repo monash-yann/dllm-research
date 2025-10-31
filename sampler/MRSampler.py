@@ -432,6 +432,8 @@ class MRSampler(BaseSampler):
                     cons_transfer_index.scatter_(dim=1, index=topk_idxs, value=True)
                     total_n_cons_updated = cons_transfer_index.sum().item()
                     transfer_index |= cons_transfer_index
+
+
                 total_n_updated = total_n_para_updated + total_n_cons_updated
 
                 x[transfer_index] = x0[transfer_index]

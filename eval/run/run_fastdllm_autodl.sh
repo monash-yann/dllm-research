@@ -8,19 +8,31 @@ export HF_ALLOW_CODE_EVAL=1
 
 CONDA_ENV_NAME="dico"
 PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
+
 #MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
+#MASK_ID=126336
+#BOS_ID=126080
+#PAD_ID=126081
+#EOS_ID=126081
+#EOT_ID=126348
+
 MODEL_PATH="$PROJECT_ROOT/models/Dream-7B-Instruct"
+MASK_ID=151666
+BOS_ID=151665
+PAD_ID=151643
+EOS_ID=151643
+EOT_ID=151643
 
 # available gpus
-GPU_IDS=(0 1)
+GPU_IDS=(0 1 2 3)
 MASTER_PORT=8086
 
-#N_LIMIT=4
+#N_LIMIT=8
 
-#TASKS="gsm8k"
-#NUM_FEWSHOT=4
+TASKS="gsm8k"
+NUM_FEWSHOT=4
 
-TASKS="humaneval"
+#TASKS="humaneval"
 
 #TASKS="mbpp"
 
@@ -97,6 +109,12 @@ do
     MODEL_ARGS+=",factor=$FACTOR"
     MODEL_ARGS+=",confidence_threshold=$CONFIDENCE_THRESHOLD"
     MODEL_ARGS+=",k=$K"
+
+    MODEL_ARGS+=${MASK_ID:+,mask_id=$MASK_ID}
+    MODEL_ARGS+=${BOS_ID:+,bos_id=$BOS_ID}
+    MODEL_ARGS+=${PAD_ID:+,pad_id=$PAD_ID}
+    MODEL_ARGS+=${EOS_ID:+,eos_id=$EOS_ID}
+    MODEL_ARGS+=${EOT_ID:+,eot_id=$EOT_ID}
 
     echo "================================================="
     echo "Project Root: $PROJECT_ROOT"

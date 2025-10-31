@@ -225,10 +225,10 @@ def visualize_MR():
         mopup_margin_threshold=3,
         max_mopup_steps=20,
         mopup_speed=1,
-        positional_weights_type='none',
+        positional_weights_type='ratio',
         max_weight=1.0,
         initial_min_weight=0.05,
-        ur_factor=1.5,
+        ur_factor=0.5,
         **token_info
     )
 
@@ -242,7 +242,7 @@ def visualize_MR():
     # exploration_thresholds = [0.2, 0.25]  -> No Positionals Weights下, 0.25表现最好
 
     gen_length = 256
-    block_lengthes = [64]
+    block_lengthes = [256]
     exploration_thresholds = [0.3]
     sampler.ur_factor = 0.5
     for block_length in block_lengthes:
@@ -276,11 +276,18 @@ def visualize_pure_llada():
 
     # 普通0-shot提示词
     gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    gsm8k_prompts = gsm8k_dataset['test']['question'][0:5]
+    gsm8k_prompts = gsm8k_dataset['test']['question'][0:3]
 
-    # get_local.activate()  # 在引入模型之前，激活装饰器
+    # get_local.activate()
+
     model_path = "../models/LLaDA-8B-Instruct"
-    # model_path = "../models/Dream-7B-Instruct"
+    token_info = {
+        'mask_id': 126336,
+        'bos_id': 126080,
+        'pad_id': 126081,
+        'eos_id': 126081,
+        'eot_id': 126348
+    }
     config = PureLLaDASamplerConfig(
         cfg_scale=0.0,
         temperature=0.0,
@@ -288,10 +295,11 @@ def visualize_pure_llada():
         max_weight=1.0,
         initial_min_weight=0.05,
         remasking="low_confidence",
-        decoding_method="fixed",
+        decoding_method="topk",
         factor=1,
-        k=-1,
+        k=1,
         confidence_threshold=0.9,
+        **token_info
     )
 
     gen_length = 256
@@ -303,7 +311,7 @@ def visualize_pure_llada():
         torch_dtype=torch.bfloat16
     )
 
-    output_dir = f"imgs/pure_MTD{sampler.decoding_method}{'_'+str(sampler.k) if sampler.decoding_method=='topk' else ''}{'_'+str(sampler.factor) if sampler.decoding_method=='factor' else ''}_PWT_{sampler.positional_weights_type}_imw{sampler.initial_min_weight}/gsm8k_SL{gen_length}_BL{block_length}/"
+    output_dir = f"imgs/llada/pure_MTD{sampler.decoding_method}{'_'+str(sampler.k) if sampler.decoding_method=='topk' else ''}{'_'+str(sampler.factor) if sampler.decoding_method=='factor' else ''}_PWT_{sampler.positional_weights_type}_imw{sampler.initial_min_weight}/gsm8k_SL{gen_length}_BL{block_length}/"
     run_gen_until(
         sampler=sampler,
         prompts=gsm8k_prompts,
@@ -380,6 +388,6 @@ def visualize_pure_dream():
 
 if __name__ == "__main__":
     # visualize_MR()
-    # visualize_pure_llada()
-    visualize_pure_dream()
+    visualize_pure_llada()
+    # visualize_pure_dream()
 
