@@ -68,7 +68,7 @@ MODEL_NAME=$(basename "$MODEL_PATH")
 
 SL_VALUES=(256)
 
-BLOCK_LENGTHES=(256)
+BLOCK_LENGTHES=(128)
 
 for SL in "${SL_VALUES[@]}"
 do

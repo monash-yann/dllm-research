@@ -428,11 +428,10 @@ class MRSampler(BaseSampler):
                 if total_n_para_updated == 0:
                     # final dance
                     cons_transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-                    _, topk_idxs = torch.topk(confidence, k=min(1, (confidence > self.acceleration_low_threshold).sum().item()), dim=-1)  # (k,)
+                    _, topk_idxs = torch.topk(confidence, k=min(1, (confidence >= self.acceleration_low_threshold).sum().item()), dim=-1)  # (k,)
                     cons_transfer_index.scatter_(dim=1, index=topk_idxs, value=True)
                     total_n_cons_updated = cons_transfer_index.sum().item()
                     transfer_index |= cons_transfer_index
-
 
                 total_n_updated = total_n_para_updated + total_n_cons_updated
 
@@ -490,9 +489,7 @@ class MRSampler(BaseSampler):
                 confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
                 transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
 
-                # exit when its speed <= that in Divide phase
-                # if total_n_updated <= self.exp_N:
-                #     break
+                # exit Conquer phase
                 dynamic_accel_mask.fill_(False)
                 for (start, end) in intervals:
                     dynamic_accel_mask[:, start: end + 1] = True
@@ -501,10 +498,13 @@ class MRSampler(BaseSampler):
                     break
                 conf_rest_masked = confidence[dynamic_accel_mask & (x == self.mask_id)]
                 dens_mean = conf_rest_masked.mean().item()
-                # print(f"=====> current confidence density in the rest zones: {dens_mean}")
+                print(f"=====> current confidence density in the rest zones: {dens_mean}")
                 if dens_mean < self.acceleration_low_threshold:
                     print(f"=====> not enough confidence density in the rest zones ({dens_mean}), exit Acceleration phase.")
                     break
+                # if total_n_updated == 0:
+                #     print(f"=====> no tokens updated in this step, exit Acceleration phase.")
+                #     break
 
         return x, steps_used, outputs, confidences, transfer_idxs, history_intervals
 
