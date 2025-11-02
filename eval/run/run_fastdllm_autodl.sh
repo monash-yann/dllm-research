@@ -9,32 +9,32 @@ export HF_ALLOW_CODE_EVAL=1
 CONDA_ENV_NAME="dico"
 PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
 
-#MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
-#MASK_ID=126336
-#BOS_ID=126080
-#PAD_ID=126081
-#EOS_ID=126081
-#EOT_ID=126348
+MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
+MASK_ID=126336
+BOS_ID=126080
+PAD_ID=126081
+EOS_ID=126081
+EOT_ID=126348
 
-MODEL_PATH="$PROJECT_ROOT/models/Dream-7B-Instruct"
-MASK_ID=151666
-BOS_ID=151665
-PAD_ID=151643
-EOS_ID=151643
-EOT_ID=151643
+#MODEL_PATH="$PROJECT_ROOT/models/Dream-7B-Instruct"
+#MASK_ID=151666
+#BOS_ID=151665
+#PAD_ID=151643
+#EOS_ID=151643
+#EOT_ID=151643
 
 # available gpus
-GPU_IDS=(0 1 2 3)
+GPU_IDS=(0)
 MASTER_PORT=8086
 
 #N_LIMIT=8
 
-TASKS="gsm8k"
-NUM_FEWSHOT=4
+#TASKS="gsm8k"
+#NUM_FEWSHOT=4
 
 #TASKS="humaneval"
 
-#TASKS="mbpp"
+TASKS="mbpp"
 
 # math-500 is a dataset on huggingface
 #TASKS="math-500"
@@ -59,7 +59,7 @@ POSITIONAL_WEIGHTS_TYPE='none'
 MAX_WEIGHT=1.0
 INITIAL_MIN_WEIGHT=0.0
 REMASKING="low_confidence"
-DECODING_METHOD="topk"
+DECODING_METHOD="fixed"
 FACTOR=1.0
 CONFIDENCE_THRESHOLD=0.95
 K=1
@@ -129,6 +129,7 @@ do
     cd "$PROJECT_ROOT" || exit
 
     # 使用 accelerate launch 启动您的评估脚本
+    set +e
     stdbuf -o0 "$CONDA_EXE" run -n "$CONDA_ENV_NAME" --no-capture-output \
       CUDA_VISIBLE_DEVICES=$GPU_LIST \
       accelerate launch \
@@ -146,6 +147,7 @@ do
           --output_path $OUTPUT_DIR \
           ${N_LIMIT:+--limit $N_LIMIT} \
           > "${OUTPUT_DIR}/log.txt" 2>&1
+#    set -e
   done
 done
 # only in autodl

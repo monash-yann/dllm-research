@@ -277,6 +277,9 @@ def visualize_pure_llada():
     # 普通0-shot提示词
     gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
     gsm8k_prompts = gsm8k_dataset['test']['question'][0:3]
+    #
+    # humaneval_dataset = load_dataset('openai/openai_humaneval')
+    # prompts = humaneval_dataset['test']['prompt'][0:3]
 
     # get_local.activate()
 
@@ -338,11 +341,14 @@ def visualize_pure_dream():
     # gsm8k_prompts = gsm8k_prompts[:1]
 
     # 普通0-shot提示词
-    gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    gsm8k_prompts = gsm8k_dataset['test']['question'][0:3]
+    # gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
+    # gsm8k_prompts = gsm8k_dataset['test']['question'][0:3]
+
+    humaneval_dataset = load_dataset('openai/openai_humaneval')
+    prompts = humaneval_dataset['test']['prompt'][0:3]
 
     gen_length = 256
-    block_length = 128
+    block_length = 32
 
     # get_local.activate()  # 在引入模型之前，激活装饰器
     # dream token info
@@ -374,10 +380,10 @@ def visualize_pure_dream():
         torch_dtype=torch.bfloat16,
     )
 
-    output_dir = f"imgs/dream/pure_MTD{sampler.decoding_method}{'_'+str(sampler.k) if sampler.decoding_method=='topk' else ''}{'_'+str(sampler.factor) if sampler.decoding_method=='factor' else ''}_PWT_{sampler.positional_weights_type}_imw{sampler.initial_min_weight}/gsm8k_SL{gen_length}_BL{block_length}/"
+    output_dir = f"imgs/dream/pure_MTD{sampler.decoding_method}{'_'+str(sampler.k) if sampler.decoding_method=='topk' else ''}{'_'+str(sampler.factor) if sampler.decoding_method=='factor' else ''}_PWT_{sampler.positional_weights_type}_imw{sampler.initial_min_weight}/humaneval_SL{gen_length}_BL{block_length}/"
     run_gen_until(
         sampler=sampler,
-        prompts=gsm8k_prompts,
+        prompts=prompts,
         max_steps=gen_length,
         gen_length=gen_length,
         block_length=block_length,
@@ -388,6 +394,6 @@ def visualize_pure_dream():
 
 if __name__ == "__main__":
     # visualize_MR()
-    visualize_pure_llada()
-    # visualize_pure_dream()
+    # visualize_pure_llada()
+    visualize_pure_dream()
 

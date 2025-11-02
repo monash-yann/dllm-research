@@ -9,37 +9,37 @@ export HF_ALLOW_CODE_EVAL=1
 CONDA_ENV_NAME="dico"
 PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
 
-#MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
-#MASK_ID=126336
-#BOS_ID=126080
-#PAD_ID=126081
-#EOS_ID=126081
-#EOT_ID=126348
+MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
+MASK_ID=126336
+BOS_ID=126080
+PAD_ID=126081
+EOS_ID=126081
+EOT_ID=126348
 
-MODEL_PATH="$PROJECT_ROOT/models/Dream-7B-Instruct"
-MASK_ID=151666
-BOS_ID=151665
-PAD_ID=151643
-EOS_ID=151643
-EOT_ID=151643
+#MODEL_PATH="$PROJECT_ROOT/models/Dream-7B-Instruct"
+#MASK_ID=151666
+#BOS_ID=151665
+#PAD_ID=151643
+#EOS_ID=151643
+#EOT_ID=151643
 
 
 # available gpus
-GPU_IDS=(0 1 2 3)
+GPU_IDS=(0)
 MASTER_PORT=8086
 
-#N_LIMIT=48
+#N_LIMIT=4
 
-#TASKS="gsm8k"
-#NUM_FEWSHOT=4
+TASKS="gsm8k"
+NUM_FEWSHOT=4
 
 #TASKS="humaneval"
 
 #TASKS="mbpp"
 
-TASKS="math-500"
-INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/math-500/"
-NUM_FEWSHOT=4
+#TASKS="math-500"
+#INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/math-500/"
+#NUM_FEWSHOT=4
 
 #TASKS="sudoku"
 #INCLUDE_PATH="$PROJECT_ROOT/eval/tasks/sudoku/"
@@ -137,6 +137,7 @@ do
       cd "$PROJECT_ROOT" || exit
 
       #    --ddp_backend nccl \: ddp mode set by running accelerate config instead of argument
+      set +e
       stdbuf -o0 "$CONDA_EXE" run -n "$CONDA_ENV_NAME" --no-capture-output \
         CUDA_VISIBLE_DEVICES=$GPU_LIST \
         accelerate launch \
@@ -154,6 +155,7 @@ do
             --output_path $OUTPUT_DIR \
             ${N_LIMIT:+--limit $N_LIMIT} \
             > "${OUTPUT_DIR}/log.txt" 2>&1
+#      set -e
     done
   done
 done
