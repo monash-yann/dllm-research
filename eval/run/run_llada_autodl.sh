@@ -104,7 +104,7 @@ do
     accelerate launch \
       --num_processes $NUM_GPUS \
       --main_process_port $MASTER_PORT \
-      -m eval.eval_model.eval_pure_llada \
+      -m eval.eval_model.eval_pure_dllm \
         --model eval_sampler \
         --confirm_run_unsafe_code \
         --tasks $TASKS \

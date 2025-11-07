@@ -24,7 +24,7 @@ EOT_ID=126348
 #EOT_ID=151643
 
 # available gpus
-GPU_IDS=(0)
+GPU_IDS=(0 1)
 MASTER_PORT=8086
 
 #N_LIMIT=8
@@ -32,9 +32,10 @@ MASTER_PORT=8086
 #TASKS="gsm8k"
 #NUM_FEWSHOT=4
 
-#TASKS="humaneval"
+TASKS="humaneval"
+#TASKS="humaneval_instruct"
 
-TASKS="mbpp"
+#TASKS="mbpp"
 
 # math-500 is a dataset on huggingface
 #TASKS="math-500"
@@ -59,8 +60,8 @@ POSITIONAL_WEIGHTS_TYPE='none'
 MAX_WEIGHT=1.0
 INITIAL_MIN_WEIGHT=0.0
 REMASKING="low_confidence"
-DECODING_METHOD="fixed"
-FACTOR=1.0
+DECODING_METHOD="factor"
+FACTOR=0.7
 CONFIDENCE_THRESHOLD=0.95
 K=1
 
@@ -68,7 +69,7 @@ MODEL_NAME=$(basename "$MODEL_PATH")
 
 SL_VALUES=(256)
 
-BLOCK_LENGTHES=(128)
+BLOCK_LENGTHES=(256)
 
 for SL in "${SL_VALUES[@]}"
 do
@@ -135,7 +136,7 @@ do
       accelerate launch \
         --num_processes $NUM_GPUS \
         --main_process_port $MASTER_PORT \
-        -m eval.eval_model.eval_pure_llada \
+        -m eval.eval_model.eval_pure_dllm \
           --model eval_sampler \
           --confirm_run_unsafe_code \
           --tasks $TASKS \
@@ -147,7 +148,7 @@ do
           --output_path $OUTPUT_DIR \
           ${N_LIMIT:+--limit $N_LIMIT} \
           > "${OUTPUT_DIR}/log.txt" 2>&1
-#    set -e
+    set -e
   done
 done
 # only in autodl

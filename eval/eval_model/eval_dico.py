@@ -1,24 +1,13 @@
 '''
 This file is inspired by the code from https://github.com/ML-GSAI/SMDM
 '''
-import json
-import os
-import sys
-from dataclasses import fields, asdict
-from typing import List
+from dataclasses import fields
 
-import accelerate
 import torch
-import numpy as np
-import torch.nn.functional as F
-from datasets import Dataset
 from lm_eval.__main__ import cli_evaluate
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
-from tqdm import tqdm
 
-from sampler.MRSampler import MRSampler, MRSamplerConfig
+from sampler.DiCoSampler import DiCoSampler, DiCoSamplerConfig
 from eval.eval_model.eval_base import set_seed, BaseEvalHarness
 
 
@@ -36,15 +25,15 @@ class MRSamplerEvalHarness(BaseEvalHarness):
             **kwargs,
     ):
 
-        sampler_config_fields = {f.name for f in fields(MRSamplerConfig)}
+        sampler_config_fields = {f.name for f in fields(DiCoSamplerConfig)}
         sampler_kwargs = {
             key: kwargs[key]
             for key in sampler_config_fields
             if key in kwargs
         }
-        sampler_config = MRSamplerConfig(**sampler_kwargs)
+        sampler_config = DiCoSamplerConfig(**sampler_kwargs)
 
-        sampler = MRSampler.from_path(
+        sampler = DiCoSampler.from_path(
             model_path,
             config=sampler_config,
             torch_dtype=torch.bfloat16

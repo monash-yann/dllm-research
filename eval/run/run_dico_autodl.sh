@@ -25,15 +25,15 @@ EOT_ID=126348
 
 
 # available gpus
-GPU_IDS=(0)
+GPU_IDS=(0 1)
 MASTER_PORT=8086
 
 #N_LIMIT=4
 
-TASKS="gsm8k"
-NUM_FEWSHOT=4
+#TASKS="gsm8k"
+#NUM_FEWSHOT=4
 
-#TASKS="humaneval"
+TASKS="humaneval"
 
 #TASKS="mbpp"
 
@@ -56,11 +56,11 @@ MC_NUM=128
 CFG_SCALE=0.0
 TEMPERATURE=0.0
 MAX_EXPLORATION_STEPS=5
-EXPLORATION_N_VALUES=(4)
+EXPLORATION_N_VALUES=(10)
 #EXPLORATION_N_VALUES=(7)
 EXPLORATION_M=2
 EXPLORATION_THRESHOLD=0.3
-ACCELERATION_PARALLEL_METHOD='fixed'
+ACCELERATION_PARALLEL_METHOD='factor'
 ACCELERATION_THRESHOLD=0.95
 ACCELERATION_LOW_THRESHOLD=0.6
 ACCELERATION_FACTOR=1.0
@@ -77,7 +77,7 @@ UR_FACTOR=0.5
 MODEL_NAME=$(basename "$MODEL_PATH")
 
 SL_VALUES=(256)
-BLOCK_LENGTHES=(128)
+BLOCK_LENGTHES=(128 256)
 
 for SL in "${SL_VALUES[@]}"
 do
@@ -143,7 +143,7 @@ do
         accelerate launch \
           --num_processes $NUM_GPUS \
           --main_process_port $MASTER_PORT \
-          -m eval.eval_model.eval_MR \
+          -m eval.eval_model.eval_dico \
             --model eval_sampler \
             --confirm_run_unsafe_code \
             --tasks $TASKS \
@@ -155,7 +155,7 @@ do
             --output_path $OUTPUT_DIR \
             ${N_LIMIT:+--limit $N_LIMIT} \
             > "${OUTPUT_DIR}/log.txt" 2>&1
-#      set -e
+      set -e
     done
   done
 done

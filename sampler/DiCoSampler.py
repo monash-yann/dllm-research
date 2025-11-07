@@ -15,7 +15,7 @@ from dataclasses import dataclass, fields, asdict, field
 
 
 @dataclass
-class MRSamplerConfig(SamplerConfig):
+class DiCoSamplerConfig(SamplerConfig):
     """
     用于存储 MRSampler 所有超参数的数据结构。
     """
@@ -36,7 +36,7 @@ class MRSamplerConfig(SamplerConfig):
     mopup_speed: int = 2
 
 
-class MRSampler(BaseSampler):
+class DiCoSampler(BaseSampler):
     """
         DiCo Sampler：
         1. Divide Phase: construct decoding zones with stable and moderate confidence, do "gentle" parallel decoding.
@@ -47,7 +47,7 @@ class MRSampler(BaseSampler):
             self,
             model: PreTrainedModel,
             tokenizer: PreTrainedTokenizer,
-            config: MRSamplerConfig
+            config: DiCoSamplerConfig
     ) -> None:
         super().__init__(model, tokenizer, config)
 
@@ -782,7 +782,7 @@ def main():
     #     "请用Python写一个冒泡排序算法",
     # ]
 
-    config = MRSamplerConfig(
+    config = DiCoSamplerConfig(
         **token_info,
         cfg_scale=0.0,
         temperature=0.0,
@@ -804,7 +804,7 @@ def main():
         ur_factor=0.5
     )
 
-    sampler = MRSampler.from_path(
+    sampler = DiCoSampler.from_path(
         model_path=model_path,
         device=device,
         config=config,

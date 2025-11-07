@@ -18,7 +18,7 @@ from dataclasses import dataclass, fields, asdict, field
 
 
 @dataclass
-class PureLLaDASamplerConfig(SamplerConfig):
+class PureDLLMSamplerConfig(SamplerConfig):
     remasking: Literal["random", "low_confidence"] = "low_confidence"
     decoding_method: Literal["topk", "factor", "fixed"] = "topk"
     k:int = -1
@@ -26,9 +26,9 @@ class PureLLaDASamplerConfig(SamplerConfig):
     confidence_threshold:float = 0.9
 
 
-class PureLLaDASampler(BaseSampler):
+class PureDLLMSampler(BaseSampler):
     """
-        PureLLaDASampler
+        PureDLLMSampler
         especially focusing on 'low-confidence' self.remasking
     """
 
@@ -273,7 +273,7 @@ def main():
         'eot_id': 151643
     }
 
-    config = PureLLaDASamplerConfig(
+    config = PureDLLMSamplerConfig(
         cfg_scale=0.0,
         temperature=0.0,
         positional_weights_type='none',
@@ -289,7 +289,7 @@ def main():
 
     max_gen_steps = 256
     block_length = 256
-    sampler = PureLLaDASampler.from_path(
+    sampler = PureDLLMSampler.from_path(
         model_path=model_path,
         device=device,
         config=config,

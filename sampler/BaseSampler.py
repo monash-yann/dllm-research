@@ -51,7 +51,6 @@ class GenerationMetrics:
 class GenerateOutput:
     out: torch.Tensor
     metrics: GenerationMetrics
-    # 以下为用于调试和分析的详细过程数据，默认为空列表，以防不需要时占用内存
     outputs: List[np.ndarray] = field(default_factory=list)
     confidences: List[np.ndarray] = field(default_factory=list)
     transfer_idxs: List[np.ndarray] = field(default_factory=list)

@@ -8,15 +8,15 @@ import shutil
 from matplotlib import patches, gridspec
 import matplotlib.pyplot as plt
 
-from sampler.MRSampler import MRSampler, MRSamplerConfig, GenerateOutput
-from sampler.PureLLaDASampler import PureLLaDASamplerConfig, PureLLaDASampler
+from sampler.DiCoSampler import DiCoSampler, DiCoSamplerConfig, GenerateOutput
+from sampler.PureDLLMSampler import PureDLLMSamplerConfig, PureDLLMSampler
 from sampler.utils import decode_outputs
 from utils import visualize_overall_steps, plot_decoding_history_on_ax, plot_single_attention_map_on_ax
 
 
 # 绘制控制函数:
 def run_gen_until(
-    sampler: MRSampler,
+    sampler: DiCoSampler,
     prompts: list,
     gen_length: int,
     max_steps: int,
@@ -178,7 +178,7 @@ def run_gen_until(
 
     print(f"{len(prompts)} promtps over. avg steps reduced: {steps_for_all / len(prompts):.2f}X")
 
-def visualize_MR():
+def visualize_DiCo():
     print(f"visualizing MR Sampler, current path: {os.path.abspath(__file__)}")
     device = 'cuda:0'
 
@@ -210,7 +210,7 @@ def visualize_MR():
         'eot_id': 151643
     }
 
-    config = MRSamplerConfig(
+    config = DiCoSamplerConfig(
         cfg_scale=0.0,
         temperature=0.0,
         max_exploration_steps=5,
@@ -232,7 +232,7 @@ def visualize_MR():
         **token_info
     )
 
-    sampler = MRSampler.from_path(
+    sampler = DiCoSampler.from_path(
         model_path=model_path,
         device=device,
         config=config,
@@ -291,7 +291,7 @@ def visualize_pure_llada():
         'eos_id': 126081,
         'eot_id': 126348
     }
-    config = PureLLaDASamplerConfig(
+    config = PureDLLMSamplerConfig(
         cfg_scale=0.0,
         temperature=0.0,
         positional_weights_type='none',
@@ -307,7 +307,7 @@ def visualize_pure_llada():
 
     gen_length = 256
     block_length = 128
-    sampler = PureLLaDASampler.from_path(
+    sampler = PureDLLMSampler.from_path(
         model_path=model_path,
         device=device,
         config=config,
@@ -360,7 +360,7 @@ def visualize_pure_dream():
         'eos_id': 151643,
         'eot_id': 151643
     }
-    config = PureLLaDASamplerConfig(
+    config = PureDLLMSamplerConfig(
         cfg_scale=0.0,
         temperature=0.0,
         positional_weights_type='none',
@@ -373,7 +373,7 @@ def visualize_pure_dream():
         confidence_threshold=0.9,
         **token_info
     )
-    sampler = PureLLaDASampler.from_path(
+    sampler = PureDLLMSampler.from_path(
         model_path=model_path,
         device=device,
         config=config,

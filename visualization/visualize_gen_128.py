@@ -9,7 +9,7 @@ from matplotlib import patches, gridspec
 import matplotlib.pyplot as plt
 
 from sampler.BaseSampler import BaseSampler
-from sampler.MRSampler import MRSampler, MRSamplerConfig, GenerateOutput
+from sampler.DiCoSampler import DiCoSampler, DiCoSamplerConfig, GenerateOutput
 from sampler.utils import decode_outputs
 from utils import visualize_overall_steps, plot_decoding_history_on_ax, plot_single_attention_map_on_ax
 
@@ -196,7 +196,7 @@ def visualize_MR():
 
     # get_local.activate()  # 在引入模型之前，激活装饰器
     model_path = "../models/LLaDA-8B-Instruct"
-    config = MRSamplerConfig(
+    config = DiCoSamplerConfig(
         cfg_scale=0.0,
         temperature=0.0,
         max_exploration_steps=10,
@@ -215,7 +215,7 @@ def visualize_MR():
         initial_min_weight=0.0,
     )
 
-    sampler = MRSampler.from_path(
+    sampler = DiCoSampler.from_path(
         model_path=model_path,
         device=device,
         config=config,

@@ -1,26 +1,18 @@
 '''
 This file is inspired by the code from https://github.com/ML-GSAI/SMDM
 '''
-import json
-import os
-import sys
-from dataclasses import fields, asdict
-from typing import List
-
+from dataclasses import fields
 import torch
 from lm_eval.__main__ import cli_evaluate
 from lm_eval.api.registry import register_model
-from tqdm import tqdm
-
-from transformers import AutoTokenizer, AutoModel
 
 from sampler.BaseSampler import GenerationMetrics, GenerateOutput
-from sampler.PureLLaDASampler import PureLLaDASampler, PureLLaDASamplerConfig
+from sampler.PureDLLMSampler import PureDLLMSampler, PureDLLMSamplerConfig
 from eval.eval_model.eval_base import set_seed, BaseEvalHarness
 
 
 @register_model("eval_sampler")
-class LLaDAEvalHarness(BaseEvalHarness):
+class PureDLLMEvalHarness(BaseEvalHarness):
     def __init__(
         self,
         model_path='./model_cache',
@@ -33,15 +25,15 @@ class LLaDAEvalHarness(BaseEvalHarness):
         **kwargs,
     ):
 
-        sampler_config_fields = {f.name for f in fields(PureLLaDASamplerConfig)}
+        sampler_config_fields = {f.name for f in fields(PureDLLMSamplerConfig)}
         sampler_kwargs = {
             key: kwargs[key]
             for key in sampler_config_fields
             if key in kwargs
         }
-        sampler_config = PureLLaDASamplerConfig(**sampler_kwargs)
+        sampler_config = PureDLLMSamplerConfig(**sampler_kwargs)
 
-        sampler = PureLLaDASampler.from_path(
+        sampler = PureDLLMSampler.from_path(
             model_path,
             config=sampler_config,
             torch_dtype=torch.bfloat16
