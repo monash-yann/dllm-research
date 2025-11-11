@@ -1,4 +1,5 @@
 .idea/
 eval/outputs
+visualization/data
 visualization/imgs
 visualization/tiny_imgs

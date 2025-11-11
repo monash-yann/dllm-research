@@ -24,15 +24,15 @@ EOT_ID=126348
 #EOT_ID=151643
 
 # available gpus
-GPU_IDS=(0 1)
+GPU_IDS=(0)
 MASTER_PORT=8086
 
 #N_LIMIT=8
 
-#TASKS="gsm8k"
-#NUM_FEWSHOT=4
+TASKS="gsm8k"
+NUM_FEWSHOT=4
 
-TASKS="humaneval"
+#TASKS="humaneval"
 #TASKS="humaneval_instruct"
 
 #TASKS="mbpp"
