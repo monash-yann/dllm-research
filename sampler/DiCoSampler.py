@@ -540,23 +540,23 @@ class DiCoSampler(BaseSampler):
             # n_conf_updated = conf_transfer_index.sum().item()
 
             # Use Margin update
-            # top2_logits = torch.topk(logits, k=2, dim=-1).values  # (b, l, 2)
-            # top2_margins = top2_logits[..., 0] - top2_logits[..., 1]  # (b, l)
-            # top2_margins[:, 0: self.block_start] = top2_margins[:, self.block_end:] = 0  # semi support
-            # #print statistics
-            # block_top2_margins = top2_margins[:, self.block_start: self.block_end]
-            # print(f"==> margins.mean={block_top2_margins.mean().item():.2f}, std={block_top2_margins.std().item():.2f}, "
-            #       f"max={block_top2_margins.max().item():.2f}, min={block_top2_margins.min().item():.2f}")
-            # top2_margins[x != self.mask_id] = 0
-            #
+            top2_logits = torch.topk(logits, k=2, dim=-1).values  # (b, l, 2)
+            top2_margins = top2_logits[..., 0] - top2_logits[..., 1]  # (b, l)
+            top2_margins[:, 0: self.block_start] = top2_margins[:, self.block_end:] = 0  # semi support
+            #print statistics
+            block_top2_margins = top2_margins[:, self.block_start: self.block_end]
+            print(f"==> margins.mean={block_top2_margins.mean().item():.2f}, std={block_top2_margins.std().item():.2f}, "
+                  f"max={block_top2_margins.max().item():.2f}, min={block_top2_margins.min().item():.2f}")
+            top2_margins[x != self.mask_id] = 0
+
             # transfer_index_margin = (top2_margins > self.mopup_margin_threshold) | (confidence > 0.98)
 
             # Test Fixed conf update
             # transfer_index_margin = confidence > self.acceleration_threshold
             # n_margin_updated = (transfer_index_margin & ~conf_transfer_index).sum().item()
 
-            n_margin_updated = 0
-            # n_margin_updated = transfer_index_margin.sum().item()
+            # n_margin_updated = 0
+            n_margin_updated = transfer_index_margin.sum().item()
             n_topk_updated = min(num_masked, max(0, self.mopup_speed - n_margin_updated))
             if n_margin_updated > 0:
                 transfer_index = transfer_index_margin
