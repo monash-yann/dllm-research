@@ -34,7 +34,7 @@ class SamplerConfig:
     positional_weights_type: Literal['absolute', 'ratio', 'static', 'none'] = 'none'
     max_weight: float = 1.0
     initial_min_weight: float = 0.05
-    ur_factor: float = 1.2
+    ur_factor: float = 1.0
     # dllm type
     dllm_type: Literal['llada', 'dream'] = 'llada'
 
