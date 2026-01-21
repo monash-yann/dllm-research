@@ -8,15 +8,15 @@ import shutil
 from matplotlib import patches, gridspec
 import matplotlib.pyplot as plt
 
-from sampler.DiCoSampler import DiCoSampler, DiCoSamplerConfig, GenerateOutput
-from sampler.PureDLLMSampler import PureDLLMSamplerConfig, PureDLLMSampler
-from sampler.utils import decode_outputs
+from dllm.DiCo import DiCo, DiCoConfig, GenerateOutput
+from dllm.DLLMBaseline import BaselineConfig, DLLMBaseline
+from dllm.utils.utils import decode_outputs
 from utils import visualize_overall_steps, plot_decoding_history_on_ax, plot_single_attention_map_on_ax
 
 
 # 绘制控制函数:
 def run_gen_until(
-    sampler: DiCoSampler,
+    sampler: DiCo,
     prompts: list,
     gen_length: int,
     max_steps: int,
@@ -210,7 +210,7 @@ def visualize_DiCo():
         'eot_id': 151643
     }
 
-    config = DiCoSamplerConfig(
+    config = DiCoConfig(
         cfg_scale=0.0,
         temperature=0.0,
         max_exploration_steps=5,
@@ -232,7 +232,7 @@ def visualize_DiCo():
         **token_info
     )
 
-    sampler = DiCoSampler.from_path(
+    sampler = DiCo.from_path(
         model_path=model_path,
         device=device,
         config=config,
@@ -291,7 +291,7 @@ def visualize_pure_llada():
         'eos_id': 126081,
         'eot_id': 126348
     }
-    config = PureDLLMSamplerConfig(
+    config = BaselineConfig(
         cfg_scale=0.0,
         temperature=0.0,
         positional_weights_type='none',
@@ -307,7 +307,7 @@ def visualize_pure_llada():
 
     gen_length = 256
     block_length = 128
-    sampler = PureDLLMSampler.from_path(
+    sampler = DLLMBaseline.from_path(
         model_path=model_path,
         device=device,
         config=config,
@@ -360,7 +360,7 @@ def visualize_pure_dream():
         'eos_id': 151643,
         'eot_id': 151643
     }
-    config = PureDLLMSamplerConfig(
+    config = BaselineConfig(
         cfg_scale=0.0,
         temperature=0.0,
         positional_weights_type='none',
@@ -373,7 +373,7 @@ def visualize_pure_dream():
         confidence_threshold=0.9,
         **token_info
     )
-    sampler = PureDLLMSampler.from_path(
+    sampler = DLLMBaseline.from_path(
         model_path=model_path,
         device=device,
         config=config,

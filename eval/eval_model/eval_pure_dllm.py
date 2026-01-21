@@ -6,8 +6,8 @@ import torch
 from lm_eval.__main__ import cli_evaluate
 from lm_eval.api.registry import register_model
 
-from sampler.BaseSampler import GenerationMetrics, GenerateOutput
-from sampler.PureDLLMSampler import PureDLLMSampler, PureDLLMSamplerConfig
+from dllm.DLLM import GenerationMetrics, GenerateOutput
+from dllm.DLLMBaseline import DLLMBaseline, BaselineConfig
 from eval.eval_model.eval_base import set_seed, BaseEvalHarness
 
 
@@ -25,15 +25,15 @@ class PureDLLMEvalHarness(BaseEvalHarness):
         **kwargs,
     ):
 
-        sampler_config_fields = {f.name for f in fields(PureDLLMSamplerConfig)}
+        sampler_config_fields = {f.name for f in fields(BaselineConfig)}
         sampler_kwargs = {
             key: kwargs[key]
             for key in sampler_config_fields
             if key in kwargs
         }
-        sampler_config = PureDLLMSamplerConfig(**sampler_kwargs)
+        sampler_config = BaselineConfig(**sampler_kwargs)
 
-        sampler = PureDLLMSampler.from_path(
+        sampler = DLLMBaseline.from_path(
             model_path,
             config=sampler_config,
             torch_dtype=torch.bfloat16

@@ -48,7 +48,7 @@ NUM_GPUS=${#GPU_IDS[@]}
 BATCH_SIZE=1
 MC_NUM=128
 
-# sampler parameters
+# dllm parameters
 CFG_SCALE=0.0
 TEMPERATURE=0.0
 POSITIONAL_WEIGHTS_TYPE='none'

@@ -6,16 +6,16 @@ import time
 import math
 import numpy as np
 
-from transformers import AutoTokenizer, AutoModel, PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizer
 from datasets import load_dataset
 
-from sampler.BaseSampler import BaseSampler, SamplerConfig, GenerationMetrics, GenerateOutput
-from sampler.utils import add_gumbel_noise, get_num_transfer_tokens, set_seed
-from dataclasses import dataclass, fields, asdict, field
+from dllm.DLLM import DLLM, DLLMConfig, GenerationMetrics, GenerateOutput
+from dllm.utils.utils import set_seed
+from dataclasses import dataclass
 
 
 @dataclass
-class DiCoSamplerConfig(SamplerConfig):
+class DiCoConfig(DLLMConfig):
     """
     用于存储 MRSampler 所有超参数的数据结构。
     """
@@ -36,7 +36,7 @@ class DiCoSamplerConfig(SamplerConfig):
     mopup_speed: int = 2
 
 
-class DiCoSampler(BaseSampler):
+class DiCo(DLLM):
     """
         DiCo Sampler：
         1. Divide Phase: construct decoding zones with stable and moderate confidence, do "gentle" parallel decoding.
@@ -47,7 +47,7 @@ class DiCoSampler(BaseSampler):
             self,
             model: PreTrainedModel,
             tokenizer: PreTrainedTokenizer,
-            config: DiCoSamplerConfig
+            config: DiCoConfig
     ) -> None:
         super().__init__(model, tokenizer, config)
 
@@ -749,32 +749,32 @@ def main():
     #     prompts= f.readlines()[0:3]
 
     # base gsm8k prompt
-    # gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    # prompts = gsm8k_dataset['test']['question'][0:3]
+    gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
+    prompts = gsm8k_dataset['test']['question'][0:3]
 
     # base humaneval prompt
-    humaneval_dataset = load_dataset('openai/openai_humaneval')
-    prompts = humaneval_dataset['test']['prompt'][99:101]
+    # humaneval_dataset = load_dataset('openai/openai_humaneval')
+    # prompts = humaneval_dataset['test']['prompt'][99:101]
 
     # llada token info
-    # model_path = "../models/LLaDA-8B-Instruct"
-    # token_info = {
-    #     'mask_id': 126336,
-    #     'bos_id': 126080,
-    #     'pad_id': 126081,
-    #     'eos_id': 126081,
-    #     'eot_id': 126348
-    # }
+    model_path = "/home/xiangzhong_ayl/dllm/models/LLaDA-8B-Instruct"
+    token_info = {
+        'mask_id': 126336,
+        'bos_id': 126080,
+        'pad_id': 126081,
+        'eos_id': 126081,
+        'eot_id': 126348
+    }
 
     # dream token info
-    model_path = "../models/Dream-7B-Instruct"
-    token_info = {
-        'mask_id': 151666,
-        'bos_id': 151665,
-        'pad_id': 151643,
-        'eos_id': 151643,
-        'eot_id': 151643
-    }
+    # model_path = "../models/Dream-7B-Instruct"
+    # token_info = {
+    #     'mask_id': 151666,
+    #     'bos_id': 151665,
+    #     'pad_id': 151643,
+    #     'eos_id': 151643,
+    #     'eot_id': 151643
+    # }
 
     # prompts = [
     #     "你知道周杰伦吗",
@@ -782,7 +782,7 @@ def main():
     #     "请用Python写一个冒泡排序算法",
     # ]
 
-    config = DiCoSamplerConfig(
+    config = DiCoConfig(
         **token_info,
         cfg_scale=0.0,
         temperature=0.0,
@@ -804,7 +804,7 @@ def main():
         ur_factor=0.5
     )
 
-    sampler = DiCoSampler.from_path(
+    sampler = DiCo.from_path(
         model_path=model_path,
         device=device,
         config=config,

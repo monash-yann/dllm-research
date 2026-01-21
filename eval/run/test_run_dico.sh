@@ -53,7 +53,7 @@ NUM_GPUS=${#GPU_IDS[@]}
 BATCH_SIZE=1
 MC_NUM=128
 
-# sampler parameters
+# dllm parameters
 #CFG_SCALE=0.0
 #TEMPERATURE=0.0
 #MAX_EXPLORATION_STEPS=10
@@ -74,7 +74,7 @@ MC_NUM=128
 #MAX_WEIGHT=1.0
 #INITIAL_MIN_WEIGHT=0.05
 #UR_FACTOR=1.0
-# sampler parameters
+# dllm parameters
 CFG_SCALE=0.0
 TEMPERATURE=0.0
 MAX_EXPLORATION_STEPS=5

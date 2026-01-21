@@ -1,23 +1,19 @@
 from abc import abstractmethod
-from typing import List, Tuple, Dict, Any, Literal
-from torch import Tensor
+from typing import List, Tuple, Literal
 import pathlib
 
 import torch
-import time
-import math
 import numpy as np
 import torch.nn.functional as F
-
+from torch import Tensor
 from transformers import AutoTokenizer, AutoModel, PreTrainedModel, PreTrainedTokenizer
-from datasets import load_dataset
-from visualizer import get_local
+# from visualizer import get_local
 
-from sampler.utils import add_gumbel_noise, get_num_transfer_tokens, set_seed
-from dataclasses import dataclass, fields, asdict, field
+from dllm.utils.utils import add_gumbel_noise
+from dataclasses import dataclass, fields, field
 
 @dataclass
-class SamplerConfig:
+class DLLMConfig:
     # Model forward config
     cfg_scale: float = 0.0
     temperature: float = 0.0
@@ -28,8 +24,8 @@ class SamplerConfig:
     eos_id: int = 126081
     eot_id: int = 126348
     # Generation general config
-    model_max_genlength: int = 2048
-    model_max_steps: int = 2048
+    max_gen_length: int = 2048
+    max_steps: int = 2048
     # Positional weight config
     positional_weights_type: Literal['absolute', 'ratio', 'static', 'none'] = 'none'
     max_weight: float = 1.0
@@ -58,26 +54,119 @@ class GenerateOutput:
     history_intervals_all: List = field(default_factory=list)
 
 
-class BaseSampler:
+class DLLM:
     """
-        An Abstract Class for all Samplers
+        An Abstract Class for all dllms
     """
     def __init__(
             self,
             model: PreTrainedModel,
             tokenizer: PreTrainedTokenizer,
-            config: SamplerConfig,
+            config: DLLMConfig,
     ) -> None:
         self.model = model
         self.tokenizer = tokenizer
         self.config = config
         self.device = model.device
-
-        # binding configs to sampler
+        # binding configs to dllm
         for field in fields(config):
             print(f"{field.name}: {getattr(config, field.name)}")
             setattr(self, field.name, getattr(config, field.name))
 
+        self.length_strategy = lambda m, p, c, il, *args, **kwargs: il
+
+    # Dynamic Generation Length. DAEDAL: https://doi.org/10.48550/arXiv.2508.00819
+    def set_length_strategy(self, func):
+        """用于动态注入不同的策略闭包"""
+        self.length_strategy = func
+
+    @classmethod
+    def from_path(
+            cls,
+            model_path: str,
+            config: DLLMConfig,
+            device: str | None = None,
+            torch_dtype: torch.dtype = torch.bfloat16,
+    ):
+        model_name = pathlib.Path(model_path).name.lower()
+        if model_name.startswith("llada"):
+            config.dllm_type = 'llada'
+        elif model_name.startswith("dream"):
+            config.dllm_type = 'dream'
+        print(f"Loading model and tokenizer from path: {model_path}, dllm_type: {config.dllm_type}")
+
+        # get_local.activate()  # 在引入模型之前，激活装饰器
+        model = AutoModel.from_pretrained(
+            model_path,
+            trust_remote_code=True,
+            torch_dtype=torch_dtype
+        )
+        # print(model)
+        if device is not None:
+            model.to(device=device)
+        model.eval()
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path,
+            trust_remote_code=True
+        )
+
+        return cls(model=model, tokenizer=tokenizer, config=config)
+
+    @torch.no_grad()
+    def _model_forward(
+            self,
+            x: torch.Tensor,
+            prompt_index: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.cfg_scale > 0.:
+            un_x = x.clone()
+            un_x[prompt_index] = self.mask_id
+            x_ = torch.cat([x, un_x], dim=0)
+            logits_batch = self.model(x_).logits
+            logits, un_logits = torch.chunk(logits_batch, 2, dim=0)
+            logits = un_logits + (self.cfg_scale + 1) * (logits - un_logits)
+        else:
+            logits = self.model(x).logits
+        if self.dllm_type == 'llada':
+            pass
+        elif self.dllm_type == 'dream':
+            logits = torch.cat([logits[:, :1], logits[:, :-1]], dim=1)
+
+        logits_with_noise = add_gumbel_noise(logits, self.temperature)
+
+
+        x0 = torch.argmax(logits_with_noise, dim=-1)
+        p = F.softmax(logits, dim=-1)
+        x0_p = torch.gather(p, dim=-1, index=x0.unsqueeze(-1)).squeeze(-1)
+        mask_index = (x == self.mask_id)
+        confidence = torch.where(mask_index, x0_p, -np.inf)
+        return x0, confidence, x0_p, logits
+
+    @torch.no_grad()
+    @abstractmethod
+    def generate(
+        self,
+        prompt,
+        gen_length=256,
+        max_steps=256,
+        block_length=256,
+        enable_metrics=True,
+    ) -> GenerateOutput:
+        pass
+
+    @torch.no_grad()
+    @abstractmethod
+    def denoise(
+        self,
+        x:Tensor,
+        max_steps=256,
+        block_length=256,
+        enable_metrics=True,
+    ) -> GenerateOutput:
+        pass
+
+    # to be changed
     def precompute_static_positional_weights(
         self,
         gen_length: int,
@@ -134,7 +223,6 @@ class BaseSampler:
 
         return step_positional_weights
 
-
     def compute_dynamic_positional_weights(
         self,
         gen_length: int,
@@ -164,80 +252,3 @@ class BaseSampler:
 
         # print(f"unmasked_ratio: {unmasked_ratio}, computed ratio_positional_weights: {ratio_positional_weights[::16].cpu().numpy()}")
         return ratio_positional_weights
-
-
-    @classmethod
-    def from_path(
-            cls,
-            model_path: str,
-            config: SamplerConfig,
-            device: str | None = None,
-            torch_dtype: torch.dtype = torch.bfloat16,
-    ):
-        model_name = pathlib.Path(model_path).name.lower()
-        if model_name.startswith("llada"):
-            config.dllm_type = 'llada'
-        elif model_name.startswith("dream"):
-            config.dllm_type = 'dream'
-        print(f"Loading model and tokenizer from path: {model_path}, dllm_type: {config.dllm_type}")
-
-        # get_local.activate()  # 在引入模型之前，激活装饰器
-        model = AutoModel.from_pretrained(
-            model_path,
-            trust_remote_code=True,
-            torch_dtype=torch_dtype
-        )
-        # print(model)
-        if device is not None:
-            model.to(device=device)
-        model.eval()
-
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_path,
-            trust_remote_code=True
-        )
-
-
-        return cls(model=model, tokenizer=tokenizer, config=config)
-
-    @torch.no_grad()
-    def _model_forward(
-            self,
-            x: torch.Tensor,
-            prompt_index: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        if self.cfg_scale > 0.:
-            un_x = x.clone()
-            un_x[prompt_index] = self.mask_id
-            x_ = torch.cat([x, un_x], dim=0)
-            logits_batch = self.model(x_).logits
-            logits, un_logits = torch.chunk(logits_batch, 2, dim=0)
-            logits = un_logits + (self.cfg_scale + 1) * (logits - un_logits)
-        else:
-            logits = self.model(x).logits
-        if self.dllm_type == 'llada':
-            pass
-        elif self.dllm_type == 'dream':
-            logits = torch.cat([logits[:, :1], logits[:, :-1]], dim=1)
-
-        logits_with_noise = add_gumbel_noise(logits, self.temperature)
-
-
-        x0 = torch.argmax(logits_with_noise, dim=-1)
-        p = F.softmax(logits, dim=-1)
-        x0_p = torch.gather(p, dim=-1, index=x0.unsqueeze(-1)).squeeze(-1)
-        mask_index = (x == self.mask_id)
-        confidence = torch.where(mask_index, x0_p, -np.inf)
-        return x0, confidence, x0_p, logits
-
-    @torch.no_grad()
-    @abstractmethod
-    def generate(
-        self,
-        prompt,
-        gen_length=256,
-        max_steps=256,
-        block_length=256,
-        enable_metrics=True,
-    ) -> GenerateOutput:
-        pass

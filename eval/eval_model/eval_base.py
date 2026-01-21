@@ -18,7 +18,7 @@ from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from tqdm import tqdm
 
-from sampler.BaseSampler import BaseSampler, GenerateOutput, GenerationMetrics
+from dllm.DLLM import DLLM, GenerateOutput, GenerationMetrics
 
 
 
@@ -41,7 +41,7 @@ class BaseEvalHarness(LM):
         steps=256,
         gen_length=256,
         block_length=256,
-        sampler: BaseSampler = None,
+        sampler: DLLM = None,
         device="cuda",
         **kwargs,
     ):

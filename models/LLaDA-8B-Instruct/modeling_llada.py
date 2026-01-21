@@ -43,7 +43,7 @@ from .configuration_llada import (
 )
 
 # 快速获取attention_map
-from visualizer import get_local
+# from visualizer import get_local
 
 
 if sys.version_info.minor > 8:
@@ -670,7 +670,7 @@ class LLaDABlock(nn.Module):
             )
 
     # 返回注意力权重的新函数
-    @get_local('attention_weights')
+    # @get_local('attention_weights')
     def _manually_scaled_dot_product_attention(
             self,
             q: torch.Tensor,

@@ -1,24 +1,22 @@
-import codecs
-from typing import List, Tuple, Dict, Any, Literal
-from torch import Tensor
+from typing import Literal
 
 import torch
 import time
-import math
 import numpy as np
 import torch.nn.functional as F
+from torch import Tensor
 
-from transformers import AutoTokenizer, AutoModel, PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizer
 from datasets import load_dataset
-from visualizer import get_local
+# from visualizer import get_local
 
-from sampler.utils import add_gumbel_noise, get_num_transfer_tokens, set_seed
-from sampler.BaseSampler import BaseSampler, SamplerConfig, GenerationMetrics, GenerateOutput
-from dataclasses import dataclass, fields, asdict, field
+from dllm.utils import add_gumbel_noise, set_seed, DAEDAL
+from dllm.DLLM import DLLM, DLLMConfig, GenerationMetrics, GenerateOutput
+from dataclasses import dataclass
 
 
 @dataclass
-class PureDLLMSamplerConfig(SamplerConfig):
+class BaselineConfig(DLLMConfig):
     remasking: Literal["random", "low_confidence"] = "low_confidence"
     decoding_method: Literal["topk", "factor", "fixed"] = "topk"
     k:int = -1
@@ -26,9 +24,9 @@ class PureDLLMSamplerConfig(SamplerConfig):
     confidence_threshold:float = 0.9
 
 
-class PureDLLMSampler(BaseSampler):
+class DLLMBaseline(DLLM):
     """
-        PureDLLMSampler
+        DLLMBaseline
         especially focusing on 'low-confidence' self.remasking
     """
 
@@ -36,7 +34,7 @@ class PureDLLMSampler(BaseSampler):
             self,
             model: PreTrainedModel,
             tokenizer: PreTrainedTokenizer,
-            config: SamplerConfig,
+            config: DLLMConfig,
     ) -> None:
         super().__init__(model, tokenizer, config)
 
@@ -50,50 +48,59 @@ class PureDLLMSampler(BaseSampler):
             enable_metrics=True,
     ) -> GenerateOutput:
 
-        assert gen_length <= self.model_max_genlength, f"gen_length must <= model_max_genlength({self.model_max_genlength})"
-        assert max_steps <= self.model_max_steps, f"max_steps must <= model_max_steps({self.model_max_steps})"
+        start_time = time.perf_counter()
 
-        # initalize positional weights
-        if self.positional_weights_type == 'absolute':
-            self.absolute_positional_weights = self.precompute_absolute_positional_weights(
-                max_steps=max_steps, gen_length=gen_length, device=self.model.device, dtype=torch.float32
-            )
-        elif self.positional_weights_type == 'ratio':
-            pass
-        elif self.positional_weights_type == 'static':
-            self.static_positional_weights = self.precompute_static_positional_weights(
-                gen_length=gen_length, device=self.model.device, dtype=torch.float32
-            )
-        else:
-            pass
+        # dynamic length
+        adjusted_gen_lengths = self.length_strategy(self.model, prompt, self.config, gen_length) # (b,)
+
+        # assert gen_length <= self.config.max_gen_length, f"gen_length must <= max_gen_length({self.max_gen_length})"
+        # assert max_steps <= self.config.max_steps, f"max_steps must <= model_max_steps({self.model_max_steps})"
+        #
+        # # initalize positional weights
+        # if self.positional_weights_type == 'absolute':
+        #     self.absolute_positional_weights = self.precompute_absolute_positional_weights(
+        #         max_steps=max_steps, gen_length=gen_length, device=self.model.device, dtype=torch.float32
+        #     )
+        # elif self.positional_weights_type == 'ratio':
+        #     pass
+        # elif self.positional_weights_type == 'static':
+        #     self.static_positional_weights = self.precompute_static_positional_weights(
+        #         gen_length=gen_length, device=self.model.device, dtype=torch.float32
+        #     )
+        # else:
+        #     pass
 
         # 主循环 (探索与加速)
         outputs = []
         confidences = []
         transfer_idxs = []
-        phase_states = []  # [{'phase':'exploration/acceleration/mopup', 'range': (start, end)}]
-        history_intervals_all = []  # [{'inceptive_step': 0, 'history_intervals': [[(start, end), ...], [(start, end), ...], ...]}]
+        phase_states = []
+        history_intervals_all = []
         accumulated_steps = 0
+        batch = prompt.shape[0]
         prompt_len = prompt.shape[1]
+        # 向上取整到 block_length 的整数倍
+        n_blocks = (adjusted_gen_lengths.max().item() + block_length - 1) // block_length
+        adjusted_gen_length = n_blocks * block_length
+        adjusted_steps = adjusted_gen_length
+        block_steps = (adjusted_gen_length) // n_blocks
+        # assert max_steps % n_blocks == 0
+        # block_steps = max_steps // n_blocks
 
-        start_time = time.perf_counter()
+        x = torch.full(
+            (batch, prompt_len + adjusted_gen_length), self.config.eos_id, dtype=torch.long
+        ).to(self.device)
+        x[:, :prompt.shape[1]] = prompt.clone()
+        cols = torch.arange(x.shape[1], device=x.device).unsqueeze(0)  # (1, max_adjusted_seq_len)
+        mask_idxs = (cols >= prompt.shape[1]) & (cols < (prompt.shape[1] + adjusted_gen_lengths.unsqueeze(1)))  # (b, max_adjuested_seq_len)
+        x[mask_idxs] = self.config.mask_id
 
-        x = torch.full((1, prompt_len + gen_length), self.mask_id, dtype=torch.long).to(self.model.device)
-        x[:, :prompt_len] = prompt.clone()
         prompt_index = (x != self.mask_id)
 
-        assert gen_length % block_length == 0
-        num_blocks = gen_length // block_length
-
-        assert max_steps % num_blocks == 0
-        block_steps = max_steps // num_blocks
-
         print(f"decoding method: {self.decoding_method}, k={self.k}, factor={self.factor}, confidence_threshold={self.confidence_threshold}.")
-        for num_block in range(num_blocks):
-                    # block_mask_index = (x[:, prompt_len + num_block * block_length: prompt_len + (
-                    #     num_block + 1) * block_length:] == self.mask_id)
-                    # num_transfer_tokens = get_num_transfer_tokens(block_mask_index, block_steps)  # 得到要demask的token数
-
+        for num_block in range(n_blocks):
+            block_start = prompt_len + num_block * block_length
+            block_end = prompt_len + (num_block + 1) * block_length
             for i in range(block_steps):
                 mask_index = (x == self.mask_id)
                 if self.cfg_scale > 0.:
@@ -126,11 +133,10 @@ class PureDLLMSampler(BaseSampler):
                 else:
                     raise NotImplementedError(self.remasking)
 
-                x0_p[:, prompt_len + (num_block + 1) * block_length:] = -np.inf #semi-ar
-
+                # x0_p[:, prompt_len + (num_block + 1) * block_length:] = -np.inf #semi-ar
                 x0 = torch.where(mask_index, x0, x)
-
                 confidence = torch.where(mask_index, x0_p, -np.inf)
+                confidence[:, 0: block_start] = confidence[:, block_end:] = -np.inf
 
                 # applying positional weights dd
                 if self.positional_weights_type == 'absolute':
@@ -165,28 +171,22 @@ class PureDLLMSampler(BaseSampler):
                                 para_feasible_n = int(self.factor / (1 - conf + 1e-6) - 1)
                                 #  3. 若满足公式，则根据这些满足条件的index形成transfer_inedx
                                 if para_feasible_n >= conf_idx + 1:
-                                    transfer_index.scatter_(dim=1, index=cand_idxs[:conf_idx + 1].unsqueeze(0), value=True)
+                                    transfer_index[b].scatter_(dim=1, index=cand_idxs[:conf_idx + 1].unsqueeze(0), value=True)
                                     break
                     elif self.decoding_method == 'topk':  # default topk
-                        if self.k:
-                            k = self.k
-                        else:
-                            assert block_length % block_steps == 0
-                            k = block_length // block_steps
+                        k = self.k if self.k != -1 else block_length // block_steps
                         # print(f"in block {num_block}, step {i}, k={k}.")
-                        for b in range(confidence.shape[0]):
-                            n_effective = (confidence > 0).sum().item()
-                            # print(f"=================n_effective: {n_effective}., k: {k}, selected_k:{min(k, n_effective)}=================")
+                        for b in range(batch):
+                            n_effective = (confidence[b] > 0).sum().item()
                             _, select_index = torch.topk(confidence[b], k=min(k, n_effective))
                             transfer_index[b, select_index] = True
-                            # print(f"select_index: {select_index.cpu().numpy()}.")
                     elif self.decoding_method == 'fixed':
                         transfer_index = confidence > self.confidence_threshold   # maximum setting by fast-dllm
                     else:
                         pass
-                    # top-1兜底
-                    if transfer_index.sum().item() == 0:
-                        for b in range(confidence.shape[0]):
+                    # top-1兜底. 若当前b的transfer_index全False, 且还有mask位置未解码完, 则选取最高confidence的位置进行解码
+                    for b in range(batch):
+                        if not transfer_index[b].any() and (x[b, block_start: block_end] == self.config.mask_id).any():
                             _, select_index = torch.topk(confidence[b], k=1)
                             transfer_index[b, select_index] = True
 
@@ -198,7 +198,7 @@ class PureDLLMSampler(BaseSampler):
                 confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
                 transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
 
-                if (x[:, prompt_len + num_block * block_length: prompt_len + (num_block+1) * block_length] == self.mask_id).sum().item() == 0:
+                if not (x[:, block_start: block_end] == self.mask_id).any():
                     print(f"block {num_block} is decoded over in block_step_i={i}.")
                     break
 
@@ -214,7 +214,7 @@ class PureDLLMSampler(BaseSampler):
             use_steps=total_steps,
             n_gen_tokens=gen_length,
             tokens_per_second=(gen_length / duration) if duration > 0 else 0,
-            step_reduction_ratio=max_steps / accumulated_steps
+            step_reduction_ratio=adjusted_steps / accumulated_steps
         )
         print(metrics)
 
@@ -232,7 +232,6 @@ class PureDLLMSampler(BaseSampler):
 def main():
     set_seed(1234)
     device = 'cuda:1'
-    model_path = "../models/LLaDA-8B-Instruct"
 
     # 4-shot prompt
     # few_shot_filename = "../prompts/gsm8k_shot.txt"
@@ -244,74 +243,86 @@ def main():
     #         prompts.append(corrected_line)
     # prompts = [codecs.decode(line, 'unicode_escape') for line in lines]
 
-
-    # base prompt
-    # gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    # prompts = gsm8k_dataset['test']['question'][0:3]
-
-    # base humaneval prompt
-    humaneval_dataset = load_dataset('openai/openai_humaneval')
-    prompts = humaneval_dataset['test']['prompt'][0:3]
+    # gsm8k prompt
+    gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
+    prompts = gsm8k_dataset['test']['question'][0:3]
 
     # use llada
-    # model_path = "../models/LLaDA-8B-Instruct"
-    # token_info = {
-    #     'mask_id': 126336,
-    #     'bos_id': 126080,
-    #     'pad_id': 126081,
-    #     'eos_id': 126081,
-    #     'eot_id': 126348
-    # }
-
-    # use dream
-    model_path = "../models/Dream-7B-Instruct"
+    # model_path = "/home/xiangzhong_ayl/dllm/models/LLaDA-8B-Instruct"
+    model_path = "/homebck/home/xiangzhong_guest/dllm/models/LLADA-8B-Instruct"
     token_info = {
-        'mask_id': 151666,
-        'bos_id': 151665,
-        'pad_id': 151643,
-        'eos_id': 151643,
-        'eot_id': 151643
+        'mask_id': 126336,
+        'bos_id': 126080,
+        'pad_id': 126081,
+        'eos_id': 126081,
+        'eot_id': 126348
     }
 
-    config = PureDLLMSamplerConfig(
+    # use dream
+    # model_path = "../models/Dream-7B-Instruct"
+    # token_info = {
+    #     'mask_id': 151666,
+    #     'bos_id': 151665,
+    #     'pad_id': 151643,
+    #     'eos_id': 151643,
+    #     'eot_id': 151643
+    # }
+
+    config = BaselineConfig(
         cfg_scale=0.0,
         temperature=0.0,
         positional_weights_type='none',
         max_weight=1.0,
         initial_min_weight=0.05,
         remasking="low_confidence",
-        decoding_method="topk",
+        decoding_method="fixed",
         factor=1,
         k=1,
         confidence_threshold=0.9,
         **token_info
     )
 
-    max_gen_steps = 256
-    block_length = 256
-    sampler = PureDLLMSampler.from_path(
+    max_gen_steps = 64
+    block_length = 64
+    sampler = DLLMBaseline.from_path(
         model_path=model_path,
         device=device,
         config=config,
         torch_dtype=torch.bfloat16
     )
+    sampler.set_length_strategy(DAEDAL())   # dynamic length
 
+    tokenizer = sampler.tokenizer
+
+    prompt_texts = []
     for i, prompt_text in enumerate(prompts):
-        print('=' * 20 + f" Generating prompt_idx: {i} " + "=" * 20)
-        tokenizer = sampler.tokenizer
+        m = [{"role": "user", "content": prompt_text}]
+        prompt_texts.append(
+            tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
+        )
 
-        print(prompt_text)
-        # m = [{"role": "user", "content": prompt_text}]
-        # prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
-        # input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
-        input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
+    tokenizer.padding_side = "left"
+    input_ids = tokenizer(prompt_texts, return_tensors="pt", padding=True, padding_side="left").input_ids.to(device)
+    print(f"input_ids shape: {input_ids.shape}")
 
-        # print(prompt_text)
+    OUT = sampler.generate(prompt=input_ids, gen_length=max_gen_steps, max_steps=max_gen_steps, block_length=block_length)
+    out = OUT.out
+    answers = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)
+    for i, ans in enumerate(answers):
+        print(f"======Prompt_{i}'s answer:======\n {ans}\n")
 
-        OUT = sampler.generate(input_ids, gen_length=max_gen_steps, max_steps=max_gen_steps, block_length=block_length)
-        out = OUT.out
-        ans = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
-        print(f"Prompt_{i}'s answer: {ans}\n")
+    # for i, prompt_text in enumerate(prompts):
+    #     print('=' * 20 + f" Generating prompt_idx: {i} " + "=" * 20)
+    #     tokenizer = sampler.tokenizer
+    #
+    #     m = [{"role": "user", "content": prompt_text}]
+    #     prompt_text = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
+    #     input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
+    #     print(f"input_ids shape: {input_ids.shape}")
+    #     OUT = sampler.go(prompts=input_ids, gen_length=max_gen_steps, max_steps=max_gen_steps, block_length=block_length)
+    #     out = OUT.out
+    #     ans = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+    #     print(f"Prompt_{i}'s answer: {ans}\n")
 
 
 if __name__ == '__main__':

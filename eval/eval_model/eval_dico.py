@@ -7,7 +7,7 @@ import torch
 from lm_eval.__main__ import cli_evaluate
 from lm_eval.api.registry import register_model
 
-from sampler.DiCoSampler import DiCoSampler, DiCoSamplerConfig
+from dllm.DiCo import DiCo, DiCoConfig
 from eval.eval_model.eval_base import set_seed, BaseEvalHarness
 
 
@@ -25,15 +25,15 @@ class MRSamplerEvalHarness(BaseEvalHarness):
             **kwargs,
     ):
 
-        sampler_config_fields = {f.name for f in fields(DiCoSamplerConfig)}
+        sampler_config_fields = {f.name for f in fields(DiCoConfig)}
         sampler_kwargs = {
             key: kwargs[key]
             for key in sampler_config_fields
             if key in kwargs
         }
-        sampler_config = DiCoSamplerConfig(**sampler_kwargs)
+        sampler_config = DiCoConfig(**sampler_kwargs)
 
-        sampler = DiCoSampler.from_path(
+        sampler = DiCo.from_path(
             model_path,
             config=sampler_config,
             torch_dtype=torch.bfloat16
