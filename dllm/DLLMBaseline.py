@@ -82,6 +82,7 @@ class DLLMBaseline(DLLM):
 
         # dynamic length
         adjusted_gen_lengths = self.length_strategy(self.model, prompt, self.config, gen_length)  # (b,)
+        print("ajusted_gen_lengths's device:", adjusted_gen_lengths.device)
         # 向上取整到 block_length 的整数倍
         n_blocks = (adjusted_gen_lengths.max().item() + block_length - 1) // block_length
         adjusted_gen_length = n_blocks * block_length
@@ -92,10 +93,11 @@ class DLLMBaseline(DLLM):
 
         x = torch.full(
             (batch, prompt_len + adjusted_gen_length), self.config.eos_id, dtype=torch.long
-        ).to(self.device)
+        ).to(self.model.device)
         x[:, :prompt.shape[1]] = prompt.clone()
-        cols = torch.arange(x.shape[1], device=x.device).unsqueeze(0)  # (1, max_adjusted_seq_len)
-        mask_idxs = (cols >= prompt.shape[1]) & (cols < (prompt.shape[1] + adjusted_gen_lengths.unsqueeze(1)))  # (b, max_adjuested_seq_len)
+        cols = torch.arange(x.shape[1]).unsqueeze(0).to(adjusted_gen_lengths.device)  # (1, max_adjusted_seq_len)
+        print("cols's device:", cols.device)
+        mask_idxs = (cols >= prompt_len) & (cols < (prompt_len + adjusted_gen_lengths.unsqueeze(1)))  # (b, max_adjuested_seq_len)
         x[mask_idxs] = self.config.mask_id
 
         prompt_index = (x != self.mask_id)

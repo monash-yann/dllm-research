@@ -48,11 +48,11 @@ class GenerateOutput:
     out: torch.Tensor
     metrics: GenerationMetrics
     state_trace: Dict[str, List[np.ndarray]] = field(default_factory=dict)
-    def __post_init__(self):
-        required_keys = {'outputs', 'confidences', 'transfer_idxs'}
-        if not required_keys.issubset(self.state_trace.keys()):
-            missing = required_keys - self.state_trace.keys()
-            raise ValueError(f"GenerateOutput.decoding_trace missing required keys: {missing}")
+    # def __post_init__(self):
+    #     required_keys = {'outputs', 'confidences', 'transfer_idxs'}
+    #     if not required_keys.issubset(self.state_trace.keys()):
+    #         missing = required_keys - self.state_trace.keys()
+    #         raise ValueError(f"GenerateOutput.decoding_trace missing required keys: {missing}")
 
     # outputs: List[np.ndarray] = field(default_factory=list)
     # confidences: List[np.ndarray] = field(default_factory=list)
@@ -158,7 +158,7 @@ class DLLM:
         gen_length=256,
         max_steps=256,
         block_length=256,
-        enable_metrics=True,
+        record=None,
     ) -> GenerateOutput:
         pass
 

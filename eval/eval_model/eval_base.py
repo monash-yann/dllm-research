@@ -269,7 +269,13 @@ class BaseEvalHarness(LM):
             stop_tokens.append(tokenizer.eos_token)
 
             # print('#' * 20 + f"the prompt is: {elem['question_text']}" + '#' * 20)
-            OUT: GenerateOutput = self.sampler.generate(prompt, gen_length=self.gen_length, max_steps=self.steps, block_length=self.block_length)
+            OUT: GenerateOutput = self.sampler.generate(
+                prompt,
+                gen_length=self.gen_length,
+                max_steps=self.steps,
+                block_length=self.block_length,
+                records=['metrics']
+            )
             generated_answer = OUT.out
             generated_answer = tokenizer.decode(generated_answer[0][prompt.shape[1]:], skip_special_tokens=False)
             # print('#' * 20 + f"generated_answer: {generated_answer}" + '#' * 20)

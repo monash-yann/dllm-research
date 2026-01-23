@@ -11,7 +11,9 @@ CONDA_ENV_NAME="dllm"
 #PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
 PROJECT_ROOT="/homebck/home/xiangzhong_guest/dllm/works/dllm-research"
 
-MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
+#MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
+MODEL_PATH="/homebck/home/xiangzhong_guest/dllm/models/LLADA-8B-Instruct"
+
 MASK_ID=126336
 BOS_ID=126080
 PAD_ID=126081
@@ -62,17 +64,17 @@ POSITIONAL_WEIGHTS_TYPE='none'
 MAX_WEIGHT=1.0
 INITIAL_MIN_WEIGHT=0.0
 REMASKING="low_confidence"
-DECODING_METHOD="factor"
+DECODING_METHOD="fixed"
 FACTOR=0.7
-CONFIDENCE_THRESHOLD=0.95
+CONFIDENCE_THRESHOLD=0.9
 K=1
 LENGTH_STRATEGY="DAEDAL"
 
 MODEL_NAME=$(basename "$MODEL_PATH")
 
-SL_VALUES=(256)
+SL_VALUES=(64)
 
-BLOCK_LENGTHES=(256)
+BLOCK_LENGTHES=(32)
 
 for SL in "${SL_VALUES[@]}"
 do
@@ -92,7 +94,7 @@ do
   for BL in "${BLOCK_LENGTHES[@]}"
   do
 #    OUTPUT_DIR="eval/outputs/${MODEL_NAME}_pure_MTD${DECODING_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}_BL${BL}/${METHOD_SUFFIX}"
-    OUTPUT_DIR="eval/outputs/DAEDAL_TEST"
+    OUTPUT_DIR="eval/outputs/DAEDAL_TEST/BL${BL}"
     rm -rf $OUTPUT_DIR
     mkdir -p $OUTPUT_DIR
 
