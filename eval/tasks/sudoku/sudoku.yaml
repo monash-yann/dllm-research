@@ -5,11 +5,11 @@ dataset_path: csv
 dataset_kwargs:
   data_files: eval/tasks/sudoku/sudoku.csv
 test_split: train
-process_docs: !function utils.process_docs
+process_docs: !function tactics.process_docs
 output_type: generate_until
-doc_to_text: !function utils.doc_to_text
-process_results: !function utils.process_results
-doc_to_target: !function utils.doc_to_target
+doc_to_text: !function tactics.doc_to_text
+process_results: !function tactics.process_results
+doc_to_target: !function tactics.doc_to_target
 generation_kwargs:
   until:
     - "Puzzle:"
@@ -25,4 +25,4 @@ num_fewshot: 5
 fewshot_delimiter: "\n\n"
 fewshot_config:
   sampler: first_n
-  samples: !function utils.list_fewshot_samples
+  samples: !function tactics.list_fewshot_samples

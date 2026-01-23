@@ -2,12 +2,12 @@ tag:
   - math_word_problems
 task: math-500
 dataset_path: HuggingFaceH4/MATH-500
-process_docs: !function utils.process_docs
+process_docs: !function tactics.process_docs
 output_type: generate_until
 training_split: null
 test_split: test
-doc_to_text: !function utils.doc_to_text
-process_results: !function utils.process_results
+doc_to_text: !function tactics.doc_to_text
+process_results: !function tactics.process_results
 doc_to_target: "{{answer if few_shot is undefined else solution}}"
 generation_kwargs:
   until:
@@ -26,4 +26,4 @@ metadata:
 num_fewshot: 4
 fewshot_config:
   sampler: first_n
-  samples: !function utils.list_fewshot_samples
+  samples: !function tactics.list_fewshot_samples

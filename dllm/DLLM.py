@@ -1,5 +1,5 @@
 from abc import abstractmethod
-from typing import List, Tuple, Literal
+from typing import List, Tuple, Literal, Dict
 import pathlib
 
 import torch
@@ -9,7 +9,7 @@ from torch import Tensor
 from transformers import AutoTokenizer, AutoModel, PreTrainedModel, PreTrainedTokenizer
 # from visualizer import get_local
 
-from dllm.utils.utils import add_gumbel_noise
+from dllm.utils import add_gumbel_noise
 from dataclasses import dataclass, fields, field
 
 @dataclass
@@ -47,11 +47,18 @@ class GenerationMetrics:
 class GenerateOutput:
     out: torch.Tensor
     metrics: GenerationMetrics
-    outputs: List[np.ndarray] = field(default_factory=list)
-    confidences: List[np.ndarray] = field(default_factory=list)
-    transfer_idxs: List[np.ndarray] = field(default_factory=list)
-    phase_states: List= field(default_factory=list)
-    history_intervals_all: List = field(default_factory=list)
+    state_trace: Dict[str, List[np.ndarray]] = field(default_factory=dict)
+    def __post_init__(self):
+        required_keys = {'outputs', 'confidences', 'transfer_idxs'}
+        if not required_keys.issubset(self.state_trace.keys()):
+            missing = required_keys - self.state_trace.keys()
+            raise ValueError(f"GenerateOutput.decoding_trace missing required keys: {missing}")
+
+    # outputs: List[np.ndarray] = field(default_factory=list)
+    # confidences: List[np.ndarray] = field(default_factory=list)
+    # transfer_idxs: List[np.ndarray] = field(default_factory=list)
+    # phase_states: List= field(default_factory=list)
+    # history_intervals_all: List = field(default_factory=list)
 
 
 class DLLM:
@@ -73,7 +80,7 @@ class DLLM:
             print(f"{field.name}: {getattr(config, field.name)}")
             setattr(self, field.name, getattr(config, field.name))
 
-        self.length_strategy = lambda m, p, c, il, *args, **kwargs: il
+        self.length_strategy = lambda m, p, c, il, *args, **kwargs: torch.tensor([il], device=self.device)
 
     # Dynamic Generation Length. DAEDAL: https://doi.org/10.48550/arXiv.2508.00819
     def set_length_strategy(self, func):
@@ -128,6 +135,7 @@ class DLLM:
             logits = un_logits + (self.cfg_scale + 1) * (logits - un_logits)
         else:
             logits = self.model(x).logits
+
         if self.dllm_type == 'llada':
             pass
         elif self.dllm_type == 'dream':
@@ -135,10 +143,9 @@ class DLLM:
 
         logits_with_noise = add_gumbel_noise(logits, self.temperature)
 
-
         x0 = torch.argmax(logits_with_noise, dim=-1)
         p = F.softmax(logits, dim=-1)
-        x0_p = torch.gather(p, dim=-1, index=x0.unsqueeze(-1)).squeeze(-1)
+        x0_p = torch.gather(p, dim=-1, index=x0.unsqueeze(-1)).squeeze(-1)  # (b, seq_len), original confidence
         mask_index = (x == self.mask_id)
         confidence = torch.where(mask_index, x0_p, -np.inf)
         return x0, confidence, x0_p, logits
@@ -149,17 +156,6 @@ class DLLM:
         self,
         prompt,
         gen_length=256,
-        max_steps=256,
-        block_length=256,
-        enable_metrics=True,
-    ) -> GenerateOutput:
-        pass
-
-    @torch.no_grad()
-    @abstractmethod
-    def denoise(
-        self,
-        x:Tensor,
         max_steps=256,
         block_length=256,
         enable_metrics=True,

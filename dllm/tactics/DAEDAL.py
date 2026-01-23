@@ -51,9 +51,9 @@ def DAEDAL(eos_confidence_threshold=0.5, expansion_factor=8, eos_check_tokens=32
                     print(
                         f"All sequences' EOS confidence reach the threshold {eos_confidence_threshold} or max length.")
                 break
-            # if not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0:
-            #     print(
-            #         f"Some sequences' EOS confidence ({[round(c.item(), 4) for c in batch_eos_confidences]}) < {eos_confidence_threshold}. Expand initial length.")
+            if not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0:
+                print(
+                    f"Some sequences' EOS confidence ({[round(c.item(), 4) for c in batch_eos_confidences]}) < {eos_confidence_threshold}. Expand initial length.")
             new_gen_lengths = gen_lengths.clone()
             # enlarge
             new_gen_lengths[sequences_to_expand] = torch.clamp(gen_lengths[sequences_to_expand] + expansion_factor, max=max_gen_length)
@@ -93,8 +93,11 @@ def _calculate_eos_confidence(logits:Tensor, total_lengths:list, prompt_length:i
         for pos in range(start_scan_pos, end_scan_pos, -1):
             if len(eos_confs_for_avg) >= eos_check_tokens:
                 break
+            # 原代码
             if predicted_tokens[i, pos] == eos_token_id:
                 eos_confs_for_avg.append(confidences[i, pos, eos_token_id].item())
+            # 修改为无条件收集最后eos_check_tokens个位置的eos概率
+            # eos_confs_for_avg.append(confidences[i, pos, eos_token_id].item())
         avg_conf = sum(eos_confs_for_avg) / eos_check_tokens
         batch_eos_confidences.append(avg_conf)
     return torch.tensor(batch_eos_confidences, device=logits.device)  # (b,)

@@ -6,10 +6,10 @@ dataset_kwargs:
   data_files: eval/tasks/countdown/countdown.jsonl
 test_split: train
 output_type: generate_until
-process_docs: !function utils.process_docs
-doc_to_text: !function utils.doc_to_text
-doc_to_target: !function utils.doc_to_target
-process_results: !function utils.process_results
+process_docs: !function tactics.process_docs
+doc_to_text: !function tactics.doc_to_text
+doc_to_target: !function tactics.doc_to_target
+process_results: !function tactics.process_results
 generation_kwargs:
   until:
     - "Question:"
@@ -25,4 +25,4 @@ num_fewshot: 3
 fewshot_delimiter: "\n\n"
 fewshot_config:
   sampler: first_n
-  samples: !function utils.list_fewshot_samples
+  samples: !function tactics.list_fewshot_samples

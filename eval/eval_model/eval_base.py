@@ -21,7 +21,6 @@ from tqdm import tqdm
 from dllm.DLLM import DLLM, GenerateOutput, GenerationMetrics
 
 
-
 def set_seed(seed):
     torch.manual_seed(seed)
     random.seed(seed)
@@ -46,6 +45,14 @@ class BaseEvalHarness(LM):
         **kwargs,
     ):
         super().__init__()
+
+        # set length_strategy
+        length_strategy = kwargs.get('length_strategy', 'vanilla')
+        if length_strategy == 'DAEDAL':
+            from dllm.tactics import DAEDAL
+            sampler.set_length_strategy(DAEDAL())
+        elif length_strategy == 'vanilla':
+            pass
 
         # initalize accelerator for multi-gpu evaluation
         accelerator = accelerate.Accelerator()
@@ -278,7 +285,7 @@ class BaseEvalHarness(LM):
             generated_answer = tokenizer.decode(generated_answer_ids, skip_special_tokens=True)
             out.append(generated_answer)
 
-            # accumulate metrics
+            # accumulate recorder
             metrics = OUT.metrics
             self.overall_metrics.append(metrics)
 
@@ -295,19 +302,19 @@ class BaseEvalHarness(LM):
         # 仅在主进程上执行聚合和写入操作，避免多GPU时重复写入
         overall_metrics: List[GenerationMetrics] = []
         if self.accelerator is not None:
-            print(f"[Info] Collecting metrics......")
+            print(f"[Info] Collecting recorder......")
             overall_metrics = self.accelerator.gather_for_metrics(self.overall_metrics)
             if self._rank != 0:
                 return
-            print(f"[Info] Gathered {len(overall_metrics)} metrics in total")
+            print(f"[Info] Gathered {len(overall_metrics)} recorder in total")
         else:
             overall_metrics = self.overall_metrics
 
         if not overall_metrics:
-            print("No overall metrics were collected. Skipping report generation.")
+            print("No overall recorder were collected. Skipping report generation.")
             return
 
-        print(f"[Info] Computing metrics......")
+        print(f"[Info] Computing recorder......")
         total_use_seconds = 0
         total_use_steps = 0
         total_n_gen_tokens = 0
@@ -331,7 +338,7 @@ class BaseEvalHarness(LM):
         metrics_fpath = os.path.join(self.output_dir, "overall_metrics.json")
         with open(metrics_fpath, 'w', encoding='utf-8') as f:
             json.dump(metrics_report, f, indent=4, ensure_ascii=False)
-        print("[Info] Computed summary metrics")
+        print("[Info] Computed summary recorder")
         print(summary_metrics)
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 from dllm.DiCo import DiCo, DiCoConfig, GenerateOutput
 from dllm.DLLMBaseline import BaselineConfig, DLLMBaseline
-from dllm.utils.utils import decode_outputs
+from dllm.tactics.utils import decode_outputs
 from utils import visualize_overall_steps, plot_decoding_history_on_ax, plot_single_attention_map_on_ax
 
 

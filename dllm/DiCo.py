@@ -10,7 +10,8 @@ from transformers import PreTrainedModel, PreTrainedTokenizer
 from datasets import load_dataset
 
 from dllm.DLLM import DLLM, DLLMConfig, GenerationMetrics, GenerateOutput
-from dllm.utils.utils import set_seed
+from dllm.tactics import DAEDAL
+from dllm.utils import set_seed
 from dataclasses import dataclass
 
 
@@ -549,7 +550,7 @@ class DiCo(DLLM):
                   f"max={block_top2_margins.max().item():.2f}, min={block_top2_margins.min().item():.2f}")
             top2_margins[x != self.mask_id] = 0
 
-            # transfer_index_margin = (top2_margins > self.mopup_margin_threshold) | (confidence > 0.98)
+            transfer_index_margin = (top2_margins > self.mopup_margin_threshold) | (confidence > 0.98)
 
             # Test Fixed conf update
             # transfer_index_margin = confidence > self.acceleration_threshold
@@ -586,22 +587,40 @@ class DiCo(DLLM):
         gen_length=256,
         max_steps=256,
         block_length=256,
-        enable_metrics=True,
+        records=None
     ) -> GenerateOutput:
         """
         DiCo Controller
         """
-        assert gen_length <= self.model_max_genlength, f"gen_length must <= model_max_genlength({self.model_max_genlength})"
-        assert max_steps <= self.model_max_steps, f"steps must <= model_max_steps({self.model_max_steps})"
+        batch = prompt.shape[0]
+        prompt_len = prompt.shape[1]
+        assert batch == 1, "currently only support batch_size=1"
+        assert gen_length <= self.config.max_gen_length, f"gen_length must <= model_max_genlength({self.model_max_genlength})"
+        assert max_steps <= self.config.max_steps, f"steps must <= model_max_steps({self.model_max_steps})"
 
-        assert gen_length % block_length == 0
-        num_blocks = gen_length // block_length
+        # assert gen_length % block_length == 0
+        # num_blocks = gen_length // block_length
+        #
+        # assert max_steps % num_blocks == 0
 
-        assert max_steps % num_blocks == 0
-        block_steps = max_steps // num_blocks
+        outputs = []
+        confidences = []
+        transfer_idxs = []
+        phase_states = []  # [{'phase':'exploration/acceleration/mopup', 'range': (start, end)}]
+        history_intervals_all = []  # [{'inceptive_step': 0, 'history_intervals': [[(start, end), ...], [(start, end), ...], ...]}]
+        accumulated_steps = 0
+        start_time = time.perf_counter()
+
+        # dynamic length
+        adjusted_gen_lengths = self.length_strategy(self.model, prompt, self.config, gen_length)  # (b,)
+        # 向上取整到 block_length 的整数倍. 若batch inference，以最长的adjusted_gen_length为准
+        n_blocks = (adjusted_gen_lengths.max().item() + block_length - 1) // block_length
+        gen_length = n_blocks * block_length
+        adjusted_steps = gen_length
+        block_steps = adjusted_steps // n_blocks
 
         self.gen_length = gen_length
-        self.max_steps = max_steps
+        self.max_steps = max_steps = adjusted_steps
         self.block_length = block_length
         self.block_steps = block_steps
 
@@ -619,21 +638,16 @@ class DiCo(DLLM):
         else:
             pass
 
-        outputs = []
-        confidences = []
-        transfer_idxs = []
-        phase_states = []  # [{'phase':'exploration/acceleration/mopup', 'range': (start, end)}]
-        history_intervals_all = []  # [{'inceptive_step': 0, 'history_intervals': [[(start, end), ...], [(start, end), ...], ...]}]
-        accumulated_steps = 0
+        x = torch.full(
+            (batch, prompt_len + gen_length), self.eos_id, dtype=torch.long
+        ).to(self.device)
+        x[:, :prompt_len] = prompt.clone()
+        cols = torch.arange(x.shape[1]).unsqueeze(0).to(x.device)   # (b, prompt_len + adjusted_gen_length)
+        mask_idxs = (cols >= prompt_len) & (cols < (prompt_len + adjusted_gen_lengths.unsqueeze(1)))  # (b, prompt_len + adjusted_gen_length)
+        x[mask_idxs] = self.mask_id
+        prompt_index = (cols < prompt_len) & (x != self.pad_id) # (b, prompt_len + adjusted_gen_length)
 
-        start_time = time.perf_counter()
-
-        x = torch.full((1, prompt.shape[1] + gen_length), self.mask_id, dtype=torch.long).to(self.model.device)
-        x[:, :prompt.shape[1]] = prompt.clone()
-        prompt_index = (x != self.mask_id)
-        prompt_len = prompt_index[0].sum().item()
-
-        for num_block in range(num_blocks):
+        for num_block in range(n_blocks):
             self.block_start = prompt_len + num_block * block_length
             self.block_end = prompt_len + (num_block + 1) * block_length
             self.num_block = num_block
@@ -715,7 +729,7 @@ class DiCo(DLLM):
             accumulated_steps += mopup_steps
             print(f"block {num_block} is decoded over in step {accumulated_steps}.")
 
-        # compute metrics
+        # compute recorder
         end_time = time.perf_counter()
         duration = end_time - start_time
         total_steps = accumulated_steps
@@ -729,13 +743,17 @@ class DiCo(DLLM):
         )
         print(metrics)
 
+        state_trace = {
+            "outputs": outputs,
+            "confidences": confidences,
+            "transfer_idxs": transfer_idxs,
+            "phase_states": phase_states,
+            "history_intervals_all": history_intervals_all,
+        }
+
         return GenerateOutput(
             out=x,
-            outputs=outputs,
-            confidences=confidences,
-            transfer_idxs=transfer_idxs,
-            phase_states=phase_states,
-            history_intervals_all=history_intervals_all,
+            state_trace=state_trace,
             metrics=metrics,
         )
 
@@ -757,7 +775,7 @@ def main():
     # prompts = humaneval_dataset['test']['prompt'][99:101]
 
     # llada token info
-    model_path = "/home/xiangzhong_ayl/dllm/models/LLaDA-8B-Instruct"
+    model_path = "/homebck/home/xiangzhong_guest/dllm/models/LLADA-8B-Instruct"
     token_info = {
         'mask_id': 126336,
         'bos_id': 126080,
@@ -810,11 +828,11 @@ def main():
         config=config,
         torch_dtype=torch.bfloat16
     )
-
+    sampler.set_length_strategy(DAEDAL())
     # max_steps = 256
     # block_length = 64
-    max_steps = 128
-    block_lengthes = [128]
+    max_steps = 64
+    block_lengthes = [64]
     # exploration_thresholds = [0.15, 0.25, 0.4] # -> 0.25 is good for 'fixed', 'factor'
     exploration_thresholds = [0.3]
 
@@ -825,7 +843,6 @@ def main():
         m = [{"role": "user", "content": prompt_text}]
         prompt_str = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
         input_ids = tokenizer(prompt_str, return_tensors="pt").input_ids.to(device)
-        # input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
 
         for block_length in block_lengthes:
             print('=' * 20 + f" block_length: {block_length} " + "=" * 20)

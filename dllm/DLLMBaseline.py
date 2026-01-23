@@ -8,10 +8,13 @@ from torch import Tensor
 
 from transformers import PreTrainedModel, PreTrainedTokenizer
 from datasets import load_dataset
+
 # from visualizer import get_local
 
-from dllm.utils import add_gumbel_noise, set_seed, DAEDAL
+from dllm.utils import add_gumbel_noise, set_seed
+from dllm.tactics import DAEDAL
 from dllm.DLLM import DLLM, DLLMConfig, GenerationMetrics, GenerateOutput
+from dllm.recorder.recorder import MetricRecorder, StateTraceRecorder
 from dataclasses import dataclass
 
 
@@ -45,13 +48,20 @@ class DLLMBaseline(DLLM):
             gen_length=256,
             max_steps=256,
             block_length=256,
-            enable_metrics=True,
+            records=['metrics'],
     ) -> GenerateOutput:
 
-        start_time = time.perf_counter()
+        batch = prompt.shape[0]
+        prompt_len = prompt.shape[1]
+        assert batch == 1, "Consider only batch_size = 1."
 
-        # dynamic length
-        adjusted_gen_lengths = self.length_strategy(self.model, prompt, self.config, gen_length) # (b,)
+        metric_recorder = MetricRecorder()
+        state_trace_recorder = StateTraceRecorder()
+        if 'metrics' in records:
+            metric_recorder.on_generate_start(max_steps=max_steps)
+        if 'state_trace' in records:
+            state_trace_recorder.on_generate_start(prompt_len=prompt_len)
+
 
         # assert gen_length <= self.config.max_gen_length, f"gen_length must <= max_gen_length({self.max_gen_length})"
         # assert max_steps <= self.config.max_steps, f"max_steps must <= model_max_steps({self.model_max_steps})"
@@ -70,15 +80,8 @@ class DLLMBaseline(DLLM):
         # else:
         #     pass
 
-        # 主循环 (探索与加速)
-        outputs = []
-        confidences = []
-        transfer_idxs = []
-        phase_states = []
-        history_intervals_all = []
-        accumulated_steps = 0
-        batch = prompt.shape[0]
-        prompt_len = prompt.shape[1]
+        # dynamic length
+        adjusted_gen_lengths = self.length_strategy(self.model, prompt, self.config, gen_length)  # (b,)
         # 向上取整到 block_length 的整数倍
         n_blocks = (adjusted_gen_lengths.max().item() + block_length - 1) // block_length
         adjusted_gen_length = n_blocks * block_length
@@ -111,7 +114,11 @@ class DLLMBaseline(DLLM):
                     logits, un_logits = torch.chunk(logits, 2, dim=0)
                     logits = un_logits + (self.cfg_scale + 1) * (logits - un_logits)
                 else:
+                    # result = self.model(x, output_attentions=True)
                     logits = self.model(x).logits
+                    # attentions = result.attentions
+                    # print(attentions.shape)
+
                 if self.dllm_type == 'llada':
                     pass
                 elif self.dllm_type == 'dream':
@@ -119,7 +126,6 @@ class DLLMBaseline(DLLM):
                 logits_with_noise = add_gumbel_noise(logits, temperature=self.temperature)
 
                 x0 = torch.argmax(logits_with_noise, dim=-1)  # b, l
-                accumulated_steps += 1
 
                 # demask & remask
                 if self.remasking == 'low_confidence':
@@ -193,39 +199,27 @@ class DLLMBaseline(DLLM):
                 x[transfer_index] = x0[transfer_index]
                 # print(f"step: {accumulated_steps}, block: {num_block}, i: {i}, n_transferred: {transfer_index.sum().item()}.")
 
-                # collecting states
-                outputs.append(x0.detach().cpu().numpy()[0][prompt_len:])
-                confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][prompt_len:])
-                transfer_idxs.append(transfer_index.detach().cpu().numpy()[0][prompt_len:])
+                # update recorder
+                if 'metrics' in records:
+                    metric_recorder.on_step_end()
+                if 'state_trace' in records:
+                    state_trace_recorder.on_step_end(x0, confidence, transfer_index)
 
                 if not (x[:, block_start: block_end] == self.mask_id).any():
                     print(f"block {num_block} is decoded over in block_step_i={i}.")
                     break
 
-        # compute metrics
-        total_steps = accumulated_steps
 
-        end_time = time.perf_counter()
-        duration = end_time - start_time
-
-        print(f"total steps: {total_steps}.")
-        metrics = GenerationMetrics(
-            use_seconds=duration,
-            use_steps=total_steps,
-            n_gen_tokens=gen_length,
-            tokens_per_second=(gen_length / duration) if duration > 0 else 0,
-            step_reduction_ratio=adjusted_steps / accumulated_steps
-        )
-        print(metrics)
+        # compute recorder
+        if 'metrics' in records:
+            metric_recorder.on_generate_end(gen_length=adjusted_gen_length, max_steps=adjusted_steps)
+        if 'state_trace' in records:
+            state_trace_recorder.on_generate_end()
 
         return GenerateOutput(
             out=x,
-            outputs=outputs,
-            confidences=confidences,
-            transfer_idxs=transfer_idxs,
-            phase_states=phase_states,
-            history_intervals_all=history_intervals_all,
-            metrics=metrics,
+            state_trace=state_trace_recorder.record,
+            metrics=metric_recorder.record,
         )
 
 
@@ -294,36 +288,20 @@ def main():
 
     tokenizer = sampler.tokenizer
 
-    prompt_texts = []
     for i, prompt_text in enumerate(prompts):
+        print('=' * 20 + f" Generating prompt_idx: {i} " + "=" * 20)
+
         m = [{"role": "user", "content": prompt_text}]
-        prompt_texts.append(
-            tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
-        )
+        prompt_text = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
+        input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
 
-    tokenizer.padding_side = "left"
-    input_ids = tokenizer(prompt_texts, return_tensors="pt", padding=True, padding_side="left").input_ids.to(device)
-    print(f"input_ids shape: {input_ids.shape}")
-
-    OUT = sampler.generate(prompt=input_ids, gen_length=max_gen_steps, max_steps=max_gen_steps, block_length=block_length)
-    out = OUT.out
-    answers = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)
-    for i, ans in enumerate(answers):
-        print(f"======Prompt_{i}'s answer:======\n {ans}\n")
-
-    # for i, prompt_text in enumerate(prompts):
-    #     print('=' * 20 + f" Generating prompt_idx: {i} " + "=" * 20)
-    #     tokenizer = sampler.tokenizer
-    #
-    #     m = [{"role": "user", "content": prompt_text}]
-    #     prompt_text = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
-    #     input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
-    #     print(f"input_ids shape: {input_ids.shape}")
-    #     OUT = sampler.go(prompts=input_ids, gen_length=max_gen_steps, max_steps=max_gen_steps, block_length=block_length)
-    #     out = OUT.out
-    #     ans = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
-    #     print(f"Prompt_{i}'s answer: {ans}\n")
+        OUT = sampler.generate(prompt=input_ids, gen_length=max_gen_steps, max_steps=max_gen_steps, block_length=block_length, records=['metrics', 'state_trace'])
+        out = OUT.out
+        ans = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+        print(f"Prompt_{i}'s answer: {ans}\n")
+        print(f"Generation Metrics: {OUT.metrics}\n")
 
 
 if __name__ == '__main__':
     main()
+
