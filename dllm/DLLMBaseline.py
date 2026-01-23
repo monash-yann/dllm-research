@@ -62,7 +62,6 @@ class DLLMBaseline(DLLM):
         if 'state_trace' in records:
             state_trace_recorder.on_generate_start(prompt_len=prompt_len)
 
-
         # assert gen_length <= self.config.max_gen_length, f"gen_length must <= max_gen_length({self.max_gen_length})"
         # assert max_steps <= self.config.max_steps, f"max_steps must <= model_max_steps({self.model_max_steps})"
         #
@@ -84,30 +83,32 @@ class DLLMBaseline(DLLM):
         adjusted_gen_lengths = self.length_strategy(self.model, prompt, self.config, gen_length)  # (b,)
         print("ajusted_gen_lengths's device:", adjusted_gen_lengths.device)
         # 向上取整到 block_length 的整数倍
-        n_blocks = (adjusted_gen_lengths.max().item() + block_length - 1) // block_length
-        adjusted_gen_length = n_blocks * block_length
+        adjusted_gen_length = adjusted_gen_lengths.max().item()
+        n_blocks = (adjusted_gen_length + block_length - 1) // block_length
+        gen_length = n_blocks * block_length
         adjusted_steps = adjusted_gen_length
-        block_steps = (adjusted_gen_length) // n_blocks
+        block_steps = (gen_length) // n_blocks
         # assert max_steps % n_blocks == 0
         # block_steps = max_steps // n_blocks
 
         x = torch.full(
-            (batch, prompt_len + adjusted_gen_length), self.config.eos_id, dtype=torch.long
+            (batch, prompt_len + gen_length), self.config.eos_id, dtype=torch.long
         ).to(self.model.device)
         x[:, :prompt.shape[1]] = prompt.clone()
         cols = torch.arange(x.shape[1]).unsqueeze(0).to(adjusted_gen_lengths.device)  # (1, max_adjusted_seq_len)
         print("cols's device:", cols.device)
         mask_idxs = (cols >= prompt_len) & (cols < (prompt_len + adjusted_gen_lengths.unsqueeze(1)))  # (b, max_adjuested_seq_len)
         x[mask_idxs] = self.config.mask_id
-
-        prompt_index = (x != self.mask_id)
+        print(f"adjusted_gen_length: {adjusted_gen_length}, gen_length: {gen_length}, n_blocks: {n_blocks}, n_mask_id: {(x == self.config.mask_id).sum().item()}.")
+        prompt_index = (x != self.config.mask_id)
 
         print(f"decoding method: {self.decoding_method}, k={self.k}, factor={self.factor}, confidence_threshold={self.confidence_threshold}.")
         for num_block in range(n_blocks):
             block_start = prompt_len + num_block * block_length
             block_end = prompt_len + (num_block + 1) * block_length
             for i in range(block_steps):
-                mask_index = (x == self.mask_id)
+                mask_index = (x == self.config.mask_id)
+                print(f"n_mask_id = {mask_index.sum().item()} at block {num_block}, step {i}.")
                 if self.cfg_scale > 0.:
                     un_x = x.clone()
                     un_x[prompt_index] = self.mask_id
@@ -145,6 +146,8 @@ class DLLMBaseline(DLLM):
                 x0 = torch.where(mask_index, x0, x)
                 confidence = torch.where(mask_index, x0_p, -np.inf)
                 confidence[:, 0: block_start] = confidence[:, block_end:] = -np.inf
+                print(f"n_remain_mask in current block: {(x[:, block_start: block_end] == self.mask_id).sum().item()}.")
+                print(f"n_positive_confidence: {(confidence[:, block_start: block_end] > 0).sum().item()}.")
 
                 # applying positional weights dd
                 if self.positional_weights_type == 'absolute':
@@ -227,7 +230,7 @@ class DLLMBaseline(DLLM):
 
 def main():
     set_seed(1234)
-    device = 'cuda:1'
+    device = 'cuda:3'
 
     # 4-shot prompt
     # few_shot_filename = "../prompts/gsm8k_shot.txt"
@@ -241,11 +244,11 @@ def main():
 
     # gsm8k prompt
     gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    prompts = gsm8k_dataset['test']['question'][0:3]
+    prompts = gsm8k_dataset['test']['question'][1:2]
 
     # use llada
-    # model_path = "/home/xiangzhong_ayl/dllm/models/LLaDA-8B-Instruct"
-    model_path = "/homebck/home/xiangzhong_guest/dllm/models/LLADA-8B-Instruct"
+    model_path = "/home/xiangzhong_ayl/dllm/models/LLaDA-8B-Instruct"
+    # model_path = "/homebck/home/xiangzhong_guest/dllm/models/LLADA-8B-Instruct"
     token_info = {
         'mask_id': 126336,
         'bos_id': 126080,
@@ -271,7 +274,7 @@ def main():
         max_weight=1.0,
         initial_min_weight=0.05,
         remasking="low_confidence",
-        decoding_method="fixed",
+        decoding_method="topk",
         factor=1,
         k=1,
         confidence_threshold=0.9,

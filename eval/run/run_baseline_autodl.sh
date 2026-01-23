@@ -3,16 +3,19 @@
 # 当任何命令失败时立即退出脚本
 set -e
 #export CONDA_EXE="/root/miniconda3/bin/conda"
-export CONDA_EXE="/homebck/home/xiangzhong_guest/miniconda3/bin/conda"
+# export CONDA_EXE="/homebck/home/xiangzhong_guest/miniconda3/bin/conda"
+export CONDA_EXE="/home/xiangzhong_ayl/miniconda3/bin/conda"
 export HF_ENDPOINT=https://hf-mirror.com
 export HF_ALLOW_CODE_EVAL=1
 
 CONDA_ENV_NAME="dllm"
 #PROJECT_ROOT="/root/autodl-tmp/dllm_sampling_system"
-PROJECT_ROOT="/homebck/home/xiangzhong_guest/dllm/works/dllm-research"
+# PROJECT_ROOT="/homebck/home/xiangzhong_guest/dllm/works/dllm-research"
+PROJECT_ROOT="/home/xiangzhong_ayl/dllm/works/dllm-research"
 
 #MODEL_PATH="$PROJECT_ROOT/models/LLaDA-8B-Instruct"
-MODEL_PATH="/homebck/home/xiangzhong_guest/dllm/models/LLADA-8B-Instruct"
+# MODEL_PATH="/homebck/home/xiangzhong_guest/dllm/models/LLADA-8B-Instruct"
+MODEL_PATH="/home/xiangzhong_ayl/dllm/models/LLaDA-8B-Instruct"
 
 MASK_ID=126336
 BOS_ID=126080
@@ -28,15 +31,15 @@ EOT_ID=126348
 #EOT_ID=151643
 
 # available gpus
-GPU_IDS=(0 1 2)
+GPU_IDS=(0 1)
 MASTER_PORT=8086
 
 #N_LIMIT=8
 
-#TASKS="gsm8k"
-#NUM_FEWSHOT=4
+TASKS="gsm8k"
+NUM_FEWSHOT=4
 
-TASKS="humaneval"
+# TASKS="humaneval"
 #TASKS="humaneval_instruct"
 
 #TASKS="mbpp"
@@ -94,7 +97,7 @@ do
   for BL in "${BLOCK_LENGTHES[@]}"
   do
 #    OUTPUT_DIR="eval/outputs/${MODEL_NAME}_pure_MTD${DECODING_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}_BL${BL}/${METHOD_SUFFIX}"
-    OUTPUT_DIR="eval/outputs/DAEDAL_TEST/BL${BL}"
+    OUTPUT_DIR="eval/outputs/DAEDAL_TEST/BL${BL}/GSM8K"
     rm -rf $OUTPUT_DIR
     mkdir -p $OUTPUT_DIR
 
