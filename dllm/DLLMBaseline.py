@@ -81,6 +81,9 @@ class DLLMBaseline(DLLM):
 
         # dynamic length
         adjusted_gen_lengths = self.length_strategy(self.model, prompt, self.config, gen_length)  # (b,)
+        # attention mask!!!
+
+
         print("ajusted_gen_lengths's device:", adjusted_gen_lengths.device)
         # 向上取整到 block_length 的整数倍
         adjusted_gen_length = adjusted_gen_lengths.max().item()
@@ -99,7 +102,7 @@ class DLLMBaseline(DLLM):
         print("cols's device:", cols.device)
         mask_idxs = (cols >= prompt_len) & (cols < (prompt_len + adjusted_gen_lengths.unsqueeze(1)))  # (b, max_adjuested_seq_len)
         x[mask_idxs] = self.config.mask_id
-        print(f"adjusted_gen_length: {adjusted_gen_length}, gen_length: {gen_length}, n_blocks: {n_blocks}, n_mask_id: {(x == self.config.mask_id).sum().item()}.")
+        # print(f"adjusted_gen_length: {adjusted_gen_length}, gen_length: {gen_length}, n_blocks: {n_blocks}, n_mask_id: {(x == self.config.mask_id).sum().item()}.")
         prompt_index = (x != self.config.mask_id)
 
         print(f"decoding method: {self.decoding_method}, k={self.k}, factor={self.factor}, confidence_threshold={self.confidence_threshold}.")
@@ -108,7 +111,7 @@ class DLLMBaseline(DLLM):
             block_end = prompt_len + (num_block + 1) * block_length
             for i in range(block_steps):
                 mask_index = (x == self.config.mask_id)
-                print(f"n_mask_id = {mask_index.sum().item()} at block {num_block}, step {i}.")
+                # print(f"n_mask_id = {mask_index.sum().item()} at block {num_block}, step {i}.")
                 if self.cfg_scale > 0.:
                     un_x = x.clone()
                     un_x[prompt_index] = self.mask_id
@@ -126,9 +129,8 @@ class DLLMBaseline(DLLM):
                     pass
                 elif self.dllm_type == 'dream':
                     logits = torch.cat([logits[:, :1], logits[:, :-1]], dim=1)
-                logits_with_noise = add_gumbel_noise(logits, temperature=self.temperature)
 
-                x0 = torch.argmax(logits_with_noise, dim=-1)  # b, l
+                x0 = torch.argmax(add_gumbel_noise(logits, temperature=self.temperature), dim=-1)  # (b, l)
 
                 # demask & remask
                 if self.remasking == 'low_confidence':
@@ -146,8 +148,8 @@ class DLLMBaseline(DLLM):
                 x0 = torch.where(mask_index, x0, x)
                 confidence = torch.where(mask_index, x0_p, -np.inf)
                 confidence[:, 0: block_start] = confidence[:, block_end:] = -np.inf
-                print(f"n_remain_mask in current block: {(x[:, block_start: block_end] == self.mask_id).sum().item()}.")
-                print(f"n_positive_confidence: {(confidence[:, block_start: block_end] > 0).sum().item()}.")
+                # print(f"n_remain_mask in current block: {(x[:, block_start: block_end] == self.mask_id).sum().item()}.")
+                # print(f"n_positive_confidence: {(confidence[:, block_start: block_end] > 0).sum().item()}.")
 
                 # applying positional weights dd
                 if self.positional_weights_type == 'absolute':
@@ -213,7 +215,6 @@ class DLLMBaseline(DLLM):
                 if not (x[:, block_start: block_end] == self.mask_id).any():
                     print(f"block {num_block} is decoded over in block_step_i={i}.")
                     break
-
 
         # compute recorder
         if 'metrics' in records:

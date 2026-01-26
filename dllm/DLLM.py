@@ -80,7 +80,7 @@ class DLLM:
             print(f"{field.name}: {getattr(config, field.name)}")
             setattr(self, field.name, getattr(config, field.name))
 
-        self.length_strategy = lambda m, p, c, il, *args, **kwargs: torch.tensor([il], device=self.device)
+        self.length_strategy = lambda m, p, c, il, *args, **kwargs: torch.tensor([il], device=self.model.device)
 
     # Dynamic Generation Length. DAEDAL: https://doi.org/10.48550/arXiv.2508.00819
     def set_length_strategy(self, func):

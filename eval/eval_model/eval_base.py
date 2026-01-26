@@ -334,7 +334,7 @@ class BaseEvalHarness(LM):
             use_steps=total_use_steps,
             n_gen_tokens=total_n_gen_tokens,
             tokens_per_second=(total_n_gen_tokens / total_use_seconds) if total_use_seconds > 0 else 0,
-            step_reduction_ratio=len(overall_metrics) * self.steps / total_use_steps if total_use_steps > 0 else 0
+            step_reduction_ratio=total_n_gen_tokens / total_use_steps if total_use_steps > 0 else 0 # assume each step generates one token
         )
         metrics_report = {
             "summary": asdict(summary_metrics),
