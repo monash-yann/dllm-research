@@ -1,6 +1,6 @@
 import time
 from dataclasses import dataclass, field
-from typing import List, Any, Dict
+from typing import List, Any, Dict, Tuple
 import numpy as np
 import torch
 from torch import Tensor
@@ -50,22 +50,39 @@ class StateTraceRecorder(CallbackTemplate):
 
     def __init__(self):
         self.prompt_len = 0
-        self.outputs = []
-        self.confidences = []
-        self.transfer_idxs = []
+        self.outputs_all = []
+        self.confidences_all = []
+        self.transfer_idxs_all = []
+        self.hidden_states_all = []
         self.record = {}
 
     def on_generate_start(self, prompt_len, **kwargs):
         self.prompt_len = prompt_len
 
-    def on_step_end(self, x: Tensor, confidence: Tensor, transfer_idx: Tensor, **kwargs):
-        self.outputs.append(x.detach().cpu().numpy()[0][self.prompt_len:])
-        self.confidences.append(confidence.detach().cpu().to(torch.float32).numpy()[0][self.prompt_len:])
-        self.transfer_idxs.append(transfer_idx.detach().cpu().numpy()[0][self.prompt_len:])
+    def on_step_end(self, 
+                    x0:Tensor=None, 
+                    confidences:Tensor=None, 
+                    transfer_index:Tensor=None, 
+                    hidden_states:Tuple[Tensor, ...]=None, 
+                    **kwargs
+                    ):
+        if x0 is not None:
+            self.outputs_all.append(x0[0].detach().cpu().numpy())
+        if confidences is not None:
+            self.confidences_all.append(confidences[0].detach().cpu().to(torch.float32).numpy())
+        if transfer_index is not None:
+            self.transfer_idxs_all.append(transfer_index[0].detach().cpu().numpy())
+        if hidden_states is not None:
+            np_h = np.array([h[0].detach().cpu().to(torch.float32).numpy() for h in hidden_states])  # (n_layers, seq_len, hidden_size)
+            # print(f"Hidden states shape {np_h.shape}.")
+            self.hidden_states_all.append(np_h)
 
     def on_generate_end(self, **kwargs):
+        # 全部转为numpy数组返回
         self.record = {
-            "outputs": self.outputs,
-            "confidences": self.confidences,
-            "transfer_idxs": self.transfer_idxs
+            "prompt_len": self.prompt_len,
+            "outputs_all": np.array(self.outputs_all),
+            "confidences_all": np.array(self.confidences_all),
+            "transfer_idxs_all": np.array(self.transfer_idxs_all),
+            "hidden_states_all": np.array(self.hidden_states_all)
         }

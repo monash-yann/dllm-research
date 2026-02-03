@@ -3,3 +3,6 @@ eval/outputs
 visualization/data
 visualization/imgs
 visualization/tiny_imgs
+visualization/huashan2/rawdata
+__pycache__/
+checkpoints/

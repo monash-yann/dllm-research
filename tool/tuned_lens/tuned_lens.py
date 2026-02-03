@@ -7,7 +7,6 @@ from safetensors.torch import load_file as torch_load
 
 from .unembed import Unembed
 
-
 class TunedLens(nn.Module):
     """A tuned lens for decoding hidden states into logits."""
 

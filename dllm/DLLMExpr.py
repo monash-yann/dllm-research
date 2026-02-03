@@ -1,3 +1,4 @@
+import codecs
 from typing import Literal
 
 import torch
@@ -19,11 +20,10 @@ from dllm.recorder.recorder import MetricRecorder, StateTraceRecorder
 from dataclasses import dataclass
 
 
-
 class DLLMExpr(DLLM):
     """
         DLLMExpr
-        especially focusing on 'low-confidence' self.remasking
+        especially focusing on 'low-confidence' remasking
     """
     def __init__(
             self,
@@ -32,7 +32,6 @@ class DLLMExpr(DLLM):
             config: DLLMConfig,
     ) -> None:
         super().__init__(model, tokenizer, config)
-
     @torch.no_grad()
     def generate(
             self,
@@ -42,10 +41,11 @@ class DLLMExpr(DLLM):
             block_length=256,
             records=['metrics'],
     ) -> GenerateOutput:
-        assert gen_length <= self.config.max_gen_length, f"gen_length must <= max_gen_length({self.max_gen_length})"
-        assert max_steps <= self.config.max_steps, f"max_steps must <= model_max_steps({self.model_max_steps})"
 
-        print(f"decoding method: {self.decoding_method}, k={self.k}, factor={self.factor}, confidence_threshold={self.confidence_threshold}.")
+        assert gen_length <= config.max_gen_length, f"gen_length must <= max_gen_length({max_gen_length})"
+        assert max_steps <= config.max_steps, f"max_steps must <= _max_steps({_max_steps})"
+
+        print(f"decoding method: {decoding_method}, k={k}, factor={factor}, confidence_threshold={confidence_threshold}.")
 
         batch = prompt.shape[0]
         prompt_len = prompt.shape[1]
@@ -54,33 +54,33 @@ class DLLMExpr(DLLM):
         metric_recorder = MetricRecorder()
         state_trace_recorder = StateTraceRecorder()
         if 'metrics' in records:
-            metric_recorder.on_generate_start(max_steps=max_steps)
+            metric_recorder.on_generate_start()
         if 'state_trace' in records:
             state_trace_recorder.on_generate_start(prompt_len=prompt_len)
 
         # dynamic length
-        total_lengths = self.length_strategy(self.model, prompt, self.config, gen_length)  # (b,)
-        
-        # TODO: attention mask!!!
-        gen_length = total_lengths.max().item()
+        batch_gen_lengths = length_strategy(model, prompt, config, gen_length)  # (b,)
+        gen_length = batch_gen_lengths.max().item()
+
+        total_lengths = prompt_len + batch_gen_lengths  # (b,), 曾经踩坑忘记算prompt_len了        
         n_blocks = (gen_length + block_length - 1) // block_length
-        block_steps = (gen_length) // n_blocks
+        print(f"adjusted gen_length: {gen_length}, n_blocks: {n_blocks}.")
         
         x = torch.full(
-            (batch, prompt_len + gen_length), self.config.eos_id, dtype=torch.long
-        ).to(self.model.device)
-        x[:, :prompt.shape[1]] = prompt.clone()
+            (batch, prompt_len + gen_length), config.eos_id, dtype=torch.long
+        ).to(device)
+        x[:, :prompt_len] = prompt.clone()
 
         # 创造x、设置mask_id、生成attention_mask
         for b in range(batch):
-            x[b, prompt_len: total_lengths[b]] = self.config.mask_id
+            x[b, prompt_len: total_lengths[b]] = config.mask_id
         arange_tensor = torch.arange(x.shape[1], device=x.device).expand(batch, -1)
         attention_mask = (arange_tensor < total_lengths.unsqueeze(1)).long()    #只对有效长度内的token进行attention
-        prompt_index = (x != self.config.mask_id)
+        prompt_index = (x != config.mask_id)
         
         # curr_decoding_pos: 记录每个batch当前解码到的位置
         curr_decoding_pos = torch.full((batch,), prompt_len, dtype=torch.long, device=x.device) #(b,)
-        mask_token_index = (x == self.config.mask_id)
+        mask_token_index = (x == config.mask_id)
         while mask_token_index.any():
             # 预处理，统计信息
             block_mask = torch.zeros_like(x, dtype=torch.bool, device=x.device)
@@ -88,25 +88,25 @@ class DLLMExpr(DLLM):
                 block_mask[b, curr_decoding_pos[b]: min(curr_decoding_pos[b] + block_length, total_lengths[b].item())] = True
         
             # 模型传播
-            if self.cfg_scale > 0.:
+            if cfg_scale > 0.:
                 un_x = x.clone()
-                un_x[prompt_index] = self.mask_id
+                un_x[prompt_index] = mask_id
                 x_ = torch.cat([x, un_x], dim=0)
                 logits = self.model(x_, attention_mask=torch.cat([attention_mask, attention_mask], dim=0)).logits
                 logits, un_logits = torch.chunk(logits, 2, dim=0)
-                logits = un_logits + (self.cfg_scale + 1) * (logits - un_logits)
+                logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
             else:
-                # result = self.model(x, output_attentions=True)
-                logits = self.model(x, attention_mask=attention_mask).logits
-                # attentions = result.attentions
-                # print(attentions.shape)
+                # result = (x, output_attentions=True)
+                output = self.model(x, attention_mask=attention_mask, output_hidden_states=True)
+                logits = output.logits
+                hidden_states = torch.stack(output.hidden_states)  # will be collected by recorder. n_layers * (b, seq_len, hidden_size)
             
-            if self.dllm_type == 'llada':
+            if dllm_type == 'llada':
                 pass
-            elif self.dllm_type == 'dream':
+            elif dllm_type == 'dream':
                 logits = torch.cat([logits[:, :1], logits[:, :-1]], dim=1)
             
-            x0 = torch.argmax(add_gumbel_noise(logits, temperature=self.temperature), dim=-1)  # (b, l)
+            x0 = torch.argmax(add_gumbel_noise(logits, temperature=temperature), dim=-1)  # (b, l)
             p = F.softmax(logits, dim=-1)  # generated confidences: (b, seq_len, vocab_size)
             confidences = torch.gather(p, dim=-1, index=x0.unsqueeze(-1)).squeeze(-1) #(b, seq_len)            
 
@@ -116,7 +116,7 @@ class DLLMExpr(DLLM):
             for b in range(batch):
                 if curr_decoding_pos[b] >= total_lengths[b]: continue   # 当前seq已解完则等其它
                 block_start, block_end = curr_decoding_pos[b], min(curr_decoding_pos[b] + block_length, total_lengths[b].item())
-                if self.decoding_method == 'factor':
+                if decoding_method == 'factor':
                     # 根据Fast-dLLM中的公式: (n + 1) * (1 - c_{n}) < f 来确定最大的可并行解码n
                     # 1. 对>min_threshold的位置按confidence排序; 3. 对这些满足条件的index形成transfer_inedx
                     conf_b = effective_confidences[b].clone()
@@ -129,15 +129,16 @@ class DLLMExpr(DLLM):
                     cand_confs = cand_confs[sorted_order]
                     # 2. 从cand_confs最低conf处开始挨个试验可行的n，直到满足条件;
                     for conf_idx, conf in reversed(list(enumerate(cand_confs.tolist()))):
-                        para_feasible_n = int(self.factor / (1 - conf + 1e-6) - 1)
+                        para_feasible_n = int(factor / (1 - conf + 1e-6) - 1)
                         #  3. 若满足公式，则根据这些满足条件的index形成transfer_inedx
                         if para_feasible_n >= conf_idx + 1:
                             transfer_index[b, cand_idxs[:conf_idx + 1]] = True
                             break
-                elif self.decoding_method == 'fixed':
-                    transfer_index[b] = effective_confidences[b] > self.confidence_threshold   # maximum setting by fast-dllm
-                elif self.decoding_method == 'topk':  # default topk
-                    k = self.k if self.k != -1 else block_length // block_steps
+                elif decoding_method == 'fixed':
+                    transfer_index[b] = effective_confidences[b] > confidence_threshold   # maximum setting by fast-dllm
+                elif decoding_method == 'topk':  # default topk
+                    if k <= 0:
+                        raise ValueError("k must be a positive integer.")
                     n_effective = (effective_confidences[b] > 0).sum().item()
                     _, select_index = torch.topk(effective_confidences[b], k=min(k, n_effective))
                     transfer_index[b, select_index] = True
@@ -145,31 +146,37 @@ class DLLMExpr(DLLM):
                     pass
 
                 # top-1兜底.
-                if not transfer_index[b].any() and (x[b, block_start: block_end] == self.mask_id).any():
+                if not transfer_index[b].any() and (x[b, block_start: block_end] == mask_id).any():
                     _, select_index = torch.topk(effective_confidences[b], k=1)
                     transfer_index[b, select_index] = True
 
             # 更新信息
             x[transfer_index] = x0[transfer_index]
-            mask_token_index = (x == self.config.mask_id)
+            mask_token_index = (x == config.mask_id)
 
             for b in range(batch):
                 if curr_decoding_pos[b] >= total_lengths[b]: continue
                 block_start, block_end = curr_decoding_pos[b], min(curr_decoding_pos[b] + block_length, total_lengths[b].item())
-                if (x[b, block_start: block_end] == self.mask_id).any(): continue
+                if (x[b, block_start: block_end] == mask_id).any(): continue
                 curr_decoding_pos[b] = block_end
 
             # update recorder
             if 'metrics' in records:
+                # print(f"step {metric_recorder.accumulated_steps} over")
                 metric_recorder.on_step_end()
             if 'state_trace' in records:
-                state_trace_recorder.on_step_end(x0, effective_confidences, transfer_index)
-            
+                state_trace_recorder.on_step_end(x0, effective_confidences, transfer_index, hidden_states)
+
+
         # compute recorder
         if 'metrics' in records:
             metric_recorder.on_generate_end(gen_length=gen_length, max_steps=gen_length)
         if 'state_trace' in records:
             state_trace_recorder.on_generate_end()
+
+
+        # 把steps_hidden_states存到本地文件
+        # np.save(f'visualization/output/hidden_states_baseline.npy', np.array(steps_hidden_states))
 
         return GenerateOutput(
             out=x,
@@ -179,16 +186,29 @@ class DLLMExpr(DLLM):
 
 
 def main():
-    set_seed(1234)
+    # set_seed(1234)
     device = 'cuda:1'
 
     # gsm8k prompt
     gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    prompts = gsm8k_dataset['test']['question'][0:3]
+    prompts = gsm8k_dataset['test']['question'][0:1]
+
+    # 4-shot prompt
+    # few_shot_filename = "prompts/gsm8k_shot.txt"
+    # prompts = []
+    # with open(few_shot_filename, "r", encoding="utf-8") as f:
+    #     for line in f:
+    #         # python会把.txt中的字符当作原始字符串，此处转为普通字符串
+    #         corrected_line = line.replace('\\n', '\n')
+    #         prompts.append(corrected_line)
+    # prompts = [codecs.decode(line, 'unicode_escape') for line in prompts]
+
+    # humaneval_dataset = load_dataset("openai/openai_humaneval", split="test")
+    # prompts = humaneval_dataset['prompt'][0:3]
 
     # use llada
-    model_path = "/home/xiangzhong_ayl/dllm/models/LLaDA-8B-Instruct"
-    # model_path = "/homebck/home/xiangzhong_guest/dllm/models/LLADA-8B-Instruct"
+    _path = "/home/xiangzhong_ayl/dllm/s/LLaDA-8B-Instruct"
+    # _path = "/homebck/home/xiangzhong_guest/dllm/s/LLADA-8B-Instruct"
     token_info = {
         'mask_id': 126336,
         'bos_id': 126080,
@@ -204,37 +224,43 @@ def main():
         max_weight=1.0,
         initial_min_weight=0.05,
         remasking="low_confidence",
-        decoding_method="fixed",
+        decoding_method="topk",
         factor=1,
         k=1,
         confidence_threshold=0.9,
         **token_info
     )
 
-    max_gen_steps = 64
-    block_length = 64
+    gen_length = 64
+    block_length = 32
     sampler = DLLMExpr.from_path(
-        model_path=model_path,
+        _path=_path,
         device=device,
         config=config,
         torch_dtype=torch.bfloat16
     )
-    sampler.set_length_strategy(DAEDAL())   # dynamic length
+    # sampler.set_length_strategy(DAEDAL())   # dynamic length
 
     tokenizer = sampler.tokenizer
-
+    
     for i, prompt_text in enumerate(prompts):
         print('=' * 20 + f" Generating prompt_idx: {i} " + "=" * 20)
+        print(f"Prompt_{i}: {prompt_text}\n")
 
-        m = [{"role": "user", "content": prompt_text}]
-        prompt_text = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
+        # m = [{"role": "user", "content": prompt_text}]
+        # prompt_text = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
         input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
 
-        OUT = sampler.generate(prompt=input_ids, gen_length=max_gen_steps, max_steps=max_gen_steps, block_length=block_length, records=['metrics', 'state_trace'])
+        OUT = sampler.generate(prompt=input_ids, gen_length=gen_length, max_steps=gen_length, block_length=block_length, records=['metrics', 'state_trace'])
         out = OUT.out
         ans = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+        
         print(f"Prompt_{i}'s answer: {ans}\n")
         print(f"Generation Metrics: {OUT.metrics}\n")
+        print(f"hidden_states shape: {OUT.state_trace['hidden_states_all'].shape}\n")
+
+        # 将hidden states保存到本地文件
+        np.save(f'visualization/huashan2/rawdata/hidden_states_gsm8k_pmt{i}.npy', OUT.state_trace['hidden_states_all'])
 
 
 if __name__ == '__main__':

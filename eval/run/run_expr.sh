@@ -32,14 +32,14 @@ EOT_ID=126348
 
 # available gpus
 GPU_IDS=(2 3)
-MASTER_PORT=8086
 
 #N_LIMIT=8
 
 TASKS="gsm8k"
-NUM_FEWSHOT=0
+NUM_FEWSHOT=4
 
 # TASKS="humaneval"
+# NUM_FEWSHOT=0
 #TASKS="humaneval_instruct"
 
 #TASKS="mbpp"
@@ -56,6 +56,7 @@ NUM_FEWSHOT=0
 GPU_LIST=$(IFS=,; echo "${GPU_IDS[*]}")
 NUM_GPUS=${#GPU_IDS[@]}
 
+
 # evaluation parameters
 BATCH_SIZE=1
 MC_NUM=128
@@ -70,11 +71,11 @@ DECODING_METHOD="fixed"
 FACTOR=0.7
 CONFIDENCE_THRESHOLD=0.9
 K=1
-# LENGTH_STRATEGY="DAEDAL"
+LENGTH_STRATEGY="DAEDAL"
 
 MODEL_NAME=$(basename "$MODEL_PATH")
 
-SL_VALUES=(256)
+SL_VALUES=(64)
 
 BLOCK_LENGTHES=(32)
 
@@ -96,8 +97,7 @@ do
   for BL in "${BLOCK_LENGTHES[@]}"
   do
 #    OUTPUT_DIR="eval/outputs/${MODEL_NAME}_pure_MTD${DECODING_METHOD}_PWT${POSITIONAL_WEIGHTS_TYPE}_imw${INITIAL_MIN_WEIGHT}_${N_LIMIT:+limit_$N_LIMIT}/${TASKS}/SL${SL}_BL${BL}/${METHOD_SUFFIX}"
-    # OUTPUT_DIR="eval/outputs/DAEDAL_TEST/BL${BL}/GSM8K"
-    OUTPUT_DIR="eval/outputs/Pure_SL${SL}/BL${BL}/gsm8k_${NUM_FEWSHOT}shot"
+    OUTPUT_DIR="eval/outputs/DAEDAL_TEST/BL${BL}/${TASKS}_${NUM_FEWSHOT}shot"
     rm -rf $OUTPUT_DIR
     mkdir -p $OUTPUT_DIR
 
@@ -145,8 +145,8 @@ do
       CUDA_VISIBLE_DEVICES=$GPU_LIST \
       accelerate launch \
         --num_processes $NUM_GPUS \
-        --main_process_port $MASTER_PORT \
-        -m eval.eval_model.eval_pure_dllm \
+        --main_process_port 8848 \
+        -m eval.eval_model.eval_expr \
           --model eval_sampler \
           --confirm_run_unsafe_code \
           --tasks $TASKS \
