@@ -1,8 +1,7 @@
 .idea/
 eval/outputs
-visualization/data
-visualization/imgs
-visualization/tiny_imgs
-visualization/huashan2/rawdata
+imgs
+tiny_imgs
+data
 __pycache__/
 checkpoints/
