@@ -75,3 +75,4 @@ class Unembed(torch.nn.Module):
     def forward(self, h: torch.Tensor) -> torch.Tensor:
         """Convert hidden states into logits."""
         return self.unembedding(self.final_norm(h))
+        # return self.unembedding(self.final_norm(h))

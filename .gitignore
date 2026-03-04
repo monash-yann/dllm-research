@@ -5,3 +5,4 @@ tiny_imgs
 data
 __pycache__/
 checkpoints/
+*.safetensors

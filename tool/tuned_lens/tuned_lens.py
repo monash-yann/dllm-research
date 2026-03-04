@@ -14,7 +14,7 @@ class TunedLens(nn.Module):
     unembed: Unembed
     layer_translators: torch.nn.ModuleList
 
-    def __init__(self, model: PreTrainedModel, bias: bool = True):
+    def __init__(self, model: PreTrainedModel, bias: bool = True, device='cpu'):
         """Create a TunedLens.
 
         Args:
@@ -34,7 +34,7 @@ class TunedLens(nn.Module):
             [
                 torch.nn.Linear(
                     config.hidden_size, config.hidden_size, dtype=model.dtype, bias=bias
-                )
+                ).to(self.base_model.device)
                 for _ in range(config.num_hidden_layers)
             ]
         )
@@ -44,6 +44,10 @@ class TunedLens(nn.Module):
             nn.init.zeros_(translator.weight)  # type: ignore
             if translator.bias is not None:
                 nn.init.zeros_(translator.bias)  # type: ignore
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
 
     def __getitem__(self, item: int) -> torch.nn.Module:
         """Get the probe module at the given index."""
@@ -71,7 +75,7 @@ class TunedLens(nn.Module):
 
     @classmethod
     def from_model_and_pretrained_lens(
-        cls, model: PreTrainedModel, lens_path: str, bias: bool = True
+        cls, model: PreTrainedModel, lens_path: str, bias: bool = True, device='cpu'
     ) -> "TunedLens":
         """Create a TunedLens from a pretrained lens checkpoint.
 
@@ -79,7 +83,7 @@ class TunedLens(nn.Module):
             model: The base model to use.
             lens_path: The path to the pretrained lens checkpoint in safetensors format.
         """
-        lens = cls(model, bias=bias)
+        lens = cls(model, bias=bias, device=device)
         state_dict = torch_load(lens_path)
         lens.load_state_dict(state_dict, strict=False)
         return lens

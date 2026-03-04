@@ -2,7 +2,7 @@ import warnings
 
 import numpy as np
 import torch
-from visualizer import get_local
+from torch import Tensor
 
 from datasets import load_dataset
 from matplotlib import patches, gridspec
@@ -31,26 +31,30 @@ def sanitize_for_matplotlib(text):
         text = text.replace(old, new)
     return text
 
-def visualize_overall_steps(folder_path:str, OUT:tuple[list, list, list], index:int=0,
-        prompt:str='', answer:str = '', is_show:bool=False, is_save:bool=True, phase_records=None):
+def visualize_overall_steps(
+        outputs:list,
+        confidences:np.ndarray|list,
+        transfer_idxs:np.ndarray|list,
+        sink_mask:np.ndarray|list=None,
+        prompt:str='', 
+        answer:str = '', 
+        is_show:bool=False, 
+        is_save:bool=True, 
+        output_filename:str="", 
+        phase_records=None,
+        color_map='Blues'
+    ):
 
-    BASE_DPI = 90
-    MIN_DPI = 70
-    BASE_SEQLEN_FOR_DPI = 256
-    MAX_SEQLEN_FOR_DPI = 1024
-    BM_RATIO = (BASE_DPI - MIN_DPI) / (MAX_SEQLEN_FOR_DPI - BASE_SEQLEN_FOR_DPI)
-    outputs, confidences, transfer_idxs = OUT
-    # print(f"outputs.shape: {len(outputs)}, {len(outputs[0])}")
-    # print(f"confidences.shape: {len(confidences)}, {len(confidences[0])}")
-    # print(f"transfer_idxs.shape: {len(transfer_idxs)}, {len(transfer_idxs[0])}")
+    DPI = 100
     num_steps = len(confidences)
     seq_len = len(confidences[0])
 
-    fig, ax = plt.subplots(figsize=(seq_len*1, num_steps*1))
-    fontsize = max(8, 18 - seq_len // 10)  # 动态字体大小
+    fig, ax = plt.subplots(figsize=(seq_len * 0.4, num_steps * 0.3))
+    # fontsize = max(8, 18 - seq_len // 10)  # 动态字体大小
+    fontsize = 8
 
-    # 使用imshow绘制热力图
-    im = ax.imshow(confidences, cmap='Blues', interpolation='nearest', vmin=0, vmax=1, aspect='auto')
+    # 使用imshow绘制热力图. rasterized=True启用栅格化渲染，显著提升大图的渲染效率
+    im = ax.imshow(confidences, cmap=color_map, interpolation='nearest', vmin=0, vmax=1, aspect='auto', rasterized=True)
 
     # 在每个小方格中添加Token文本
     for i in range(num_steps):
@@ -62,7 +66,7 @@ def visualize_overall_steps(folder_path:str, OUT:tuple[list, list, list], index:
             ax.text(j, i, outputs[i][j],
                     ha="center", va="center", color=text_color, fontsize=fontsize)
 
-            # 关键判断：检查当前步骤(i)的当前位置(j)的transfer值是否为True
+            # transfer token框红：检查当前步骤(i)的当前位置(j)的transfer值是否为True
             if transfer_idxs[i][j]:
                 rect = patches.Rectangle(
                     (j - 0.5, i - 0.5),
@@ -72,6 +76,17 @@ def visualize_overall_steps(folder_path:str, OUT:tuple[list, list, list], index:
                     facecolor='none'      # 设置填充色为无，只保留边框
                 )
                 ax.add_patch(rect)
+            # sink token框为棕色
+            if sink_mask is not None and sink_mask[i][j]:
+                rect = patches.Rectangle(
+                    (j - 0.5, i - 0.5),
+                    1, 1,
+                    linewidth=5,          # 设置边框线宽
+                    edgecolor='yellow',      # 设置边框颜色为棕色
+                    facecolor='none'      # 设置填充色为无，只保留边框
+                )
+                ax.add_patch(rect)
+
 
     # 添加右侧颜色条 (Colorbar)
     cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
@@ -92,13 +107,14 @@ def visualize_overall_steps(folder_path:str, OUT:tuple[list, list, list], index:
     tick_spacing_y = 5
     ax.set_xticks(np.arange(0, seq_len, tick_spacing_x))
     ax.set_yticks(np.arange(0, num_steps, tick_spacing_y))
-    ax.set_xticklabels(np.arange(1, seq_len + 1, tick_spacing_x))  # 标签从1开始
-    ax.set_yticklabels(np.arange(1, num_steps + 1, tick_spacing_y))  # 标签从1开始
+    ax.set_xticklabels(np.arange(0, seq_len, tick_spacing_x)) 
+    ax.set_yticklabels(np.arange(0, num_steps, tick_spacing_y)) 
 
     # 调整布局防止标签重叠
     fig.tight_layout()
 
-    # 若分阶段，则用大框标识区别各阶段
+
+    # 若分阶段，则用大框标识区别各阶段 (待for DiCo)
     if phase_records is not None:
         # 绘制遍历所有阶段框
         if 'phase_states' in phase_records:
@@ -157,111 +173,129 @@ def visualize_overall_steps(folder_path:str, OUT:tuple[list, list, list], index:
                             facecolor='none'  # 无填充色
                         )
                         ax.add_patch(rect)
+    
     # 保存图像
-    if (is_save):
-        dpi = BASE_DPI - BM_RATIO * (seq_len - BASE_SEQLEN_FOR_DPI)
-        print(f"dpi :{dpi}")
-        plt.savefig(f"{folder_path}/example{index}.png", dpi=dpi)
-    if (is_show):
+    if is_show:
+        # 在 Jupyter 中显示时使用低 DPI 以减小输出大小
+        PREVIEW_DPI = 50
+        fig.set_dpi(PREVIEW_DPI)
+        # print(f"Preview DPI: {PREVIEW_DPI}")
         plt.show()
-
+    if is_save:
+        # 保存时使用高 DPI
+        # print(f"Save DPI: {DPI}")
+        # 如果output_filename不以常见图像格式结尾，则添加.png后缀
+        if not output_filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.pdf')):
+            output_filename += ".pdf"
+        plt.savefig(f"{output_filename}", bbox_inches='tight')
     plt.close() #防止在控制台中打印
 
-def visualize_attention_maps(attention_map, heads_to_plot: list = None, prompt_len=0, is_show=False, is_save=False, folder_path='', index=-1):
+
+def visualize_single_step(
+        step_idx:int,
+        layer_outputs:list,
+        layer_confidences:np.ndarray|list,
+        sink_mask:np.ndarray|list=None,
+        transfer_idxs:np.ndarray|list=None,
+        prompt:str='',
+        answer:str = '',
+        is_show:bool=False, 
+        is_save:bool=True, 
+        output_filename:str=""
+    ):
+    """ 
+        单步可视化, 带tuned_lens和attn_sink 
+        :param step_idx: 当前步骤索引
+        :param layer_outputs: (N_layers + 1, seq_len) 每层的输出token列表 (tuned lens/logit lens)
+        :param layer_confidences: (N_layers + 1, seq_len) 每层的置信度列表 (tuned lens/logit lens)
+        :param sink_mask: (N_layers + 1, seq_len) 每层的sink token mask列表 
+        :param transfer_idxs: (N_layers + 1, seq_len) 每层的transfer token列表 
     """
-    接收从 get_local.cache 中捕获的注意力图缓存，并将其可视化。
+    DPI = 50
+    
+    n_layers = len(layer_outputs)
+    seq_len = len(layer_outputs[0])
 
-    参数:
-    - attention_map (np arr): shape: (batch_size, heads, seq_len, seq_len)
-    - heads_to_plot (list, optional): 一个包含要绘制的头索引的列表。
-                                      如果为 None，则默认绘制前8个头 [0, 1, ..., 7]。
-    """
-    # 如果未指定要绘制哪些头，则默认选择前8个
-    if heads_to_plot is None:
-        heads_to_plot = list(range(8))
+    fig, ax = plt.subplots(figsize=(seq_len * 0.5, n_layers * 0.3))
+    # fontsize = max(8, 18 - seq_len // 10)  # 动态字体大小
+    fontsize = 8
 
-    # --- 准备绘图数据 ---
-    # 数据形状应为 (1, num_heads, seq_len, seq_len)
-    # 我们去掉 batch 维度
-    if attention_map.shape[0] != 1:
-        warnings.warn(f"输入的 attention map 的 batch size 不为1（当前为 {attention_map.shape[0]}），将只可视化第一个 batch 的数据。")
-    attention_heads_data = attention_map[0] # 获取 batch 0 的数据
+    # 使用imshow绘制热力图
+    im = ax.imshow(layer_confidences, cmap='Blues', interpolation='nearest', vmin=0, vmax=1, aspect='auto', rasterized=True)
 
-    num_heads_available = attention_heads_data.shape[0]
-    if max(heads_to_plot) >= num_heads_available:
-        print(f"错误：请求绘制的头索引 (最大为 {max(heads_to_plot)}) 超出了可用的头数量 ({num_heads_available})。")
-        return
+    # 在每个小方格中添加Token文本
+    for i in range(n_layers):
+        for j in range(seq_len):
+            # 根据背景色的深浅，决定文字用黑色还是白色，以保证清晰可读
+            bg_color_val = layer_confidences[i][j]
+            text_color = "w" if bg_color_val > 0.6 else "black"
+            # text_color = 'black'
+            ax.text(j, i, layer_outputs[i][j],
+                    ha="center", va="center", color=text_color, fontsize=fontsize)
 
-    # --- 使用 Matplotlib 绘图 ---
-    # 计算网格布局，确保能容纳所有要绘制的头
-    num_plots = len(heads_to_plot)
-    # 尽可能使用4列，然后计算需要的行数
-    ncols = 4
-    nrows = (num_plots + ncols - 1) // ncols
+            # sink token框为黄色
+            if sink_mask is not None and i < len(sink_mask) and sink_mask[i][j]:
+                rect = patches.Rectangle(
+                    (j - 0.5, i - 0.5),
+                    1, 1,
+                    linewidth=5,          # 设置边框线宽
+                    edgecolor='yellow',      # 设置边框颜色为黄色
+                    facecolor='none'      # 设置填充色为无，只保留边框
+                )
+                ax.add_patch(rect)
+            
+            # 最后一个layer的transfer token框红
+            if i == n_layers - 1 and transfer_idxs[j]:
+                rect = patches.Rectangle(
+                    (j - 0.5, i - 0.5),
+                    1, 1,
+                    linewidth=5,          # 设置边框线宽
+                    edgecolor='red',      # 设置边框颜色为红色
+                    facecolor='none'      # 设置填充色为无，只保留边框
+                )
+                ax.add_patch(rect)
 
-    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows))
-    # 如果只有一个子图，axes 不是一个数组，需要手动转成数组方便索引
-    if num_plots == 1:
-        axes = np.array([axes])
+    # 添加右侧颜色条 (Colorbar)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Confidence Score', rotation=-90, va="bottom")
 
-    # 将多余的子图隐藏
-    for i in range(num_plots, nrows * ncols):
-        axes.flatten()[i].axis('off')
+    # 防止latex公式格式引起的渲染报错
+    prompt = sanitize_for_matplotlib(prompt)
+    answer = sanitize_for_matplotlib(answer)
+    # 设置坐标轴和标签
+    ax.set_xlabel("Token Position", fontsize=fontsize)
+    ax.set_ylabel("Sampling Step", fontsize=fontsize)
+    ax.set_title(f"******Step {step_idx} of the Prompt******: \n"
+                 f"{prompt if len(prompt)<=2000 else prompt[:2000]+'...'} \n"
+                 f"******Answer******: {answer if len(answer) <=2000 else answer[:2000]}", fontsize=fontsize)
 
-    for i, head_idx in enumerate(heads_to_plot):
-        ax = axes.flatten()[i]
+    # 设置刻度，使其显示在每个方格的中心
+    tick_spacing_x = 10
+    tick_spacing_y = 5
+    ax.set_xticks(np.arange(0, seq_len, tick_spacing_x))
+    ax.set_yticks(np.arange(0, n_layers, tick_spacing_y))
+    ax.set_xticklabels(np.arange(1, seq_len + 1, tick_spacing_x))  # 标签从1开始
+    ax.set_yticklabels(np.arange(1, n_layers + 1, tick_spacing_y))  # 标签从1开始
 
-        # 从所有头中获取当前要绘制的那个头的数据
-        head_data = attention_heads_data[head_idx]
-
-        plot_single_attention_map_on_ax(ax, head_data, f"head {head_idx}", prompt_len=prompt_len)
-
-    plt.title(f"attention_maps in {num_plots} heads...")
+    # 调整布局防止标签重叠
     fig.tight_layout()
 
     if is_show:
+        # 在 Jupyter 中显示时使用低 DPI 以减小输出大小
+        PREVIEW_DPI = 50
+        fig.set_dpi(PREVIEW_DPI)
+        print(f"Preview DPI: {PREVIEW_DPI}")
         plt.show()
     if is_save:
-        plt.savefig(f"{folder_path}/example{index}.png")
-        # print("图像已保存为 attention_map_visualization.png")
-    plt.close()
+        # 保存时使用高 DPI
+        print(f"Save DPI: {DPI}")
+        # 如果output_filename不以常见图像格式结尾，则添加.png后缀. 默认存为pdf矢量图.
+        if not output_filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.pdf')):
+            output_filename += ".pdf"
+        plt.savefig(f"{output_filename}", bbox_inches='tight')
+    plt.close() #防止在控制台中打印
 
-# 辅助函数1: 绘制单步的预测结果
-def plot_step_result_on_ax(ax, tokens, confidence, transfers):
-    """
-    在一个给定的matplotlib Axes对象(ax)上绘制单步的预测结果条。
-    这是从 visualize_overall_steps 中抽取的单行绘制逻辑。
-    """
-    seq_len = len(tokens)
-
-    # imshow需要2D数组，所以我们将1D的confidence变成(1, seq_len)
-    confidences_reshaped = np.array(confidence).reshape(1, -1)
-
-    im = ax.imshow(confidences_reshaped, cmap='Blues', interpolation='nearest', vmin=0, vmax=1, aspect='equal', extent=(-0.5, seq_len - 0.5, -0.5, 0.5))
-
-    for j in range(seq_len):
-        bg_color_val = confidence[j]
-        text_color = "w" if bg_color_val > 0.6 else "black"
-        ax.text(j, 0, tokens[j], ha="center", va="center", color=text_color, fontsize=12)
-        # 画demask红框
-        if transfers[j]:
-            rect = patches.Rectangle(
-                (j - 0.5, -0.5), 1, 1,
-                linewidth=3, edgecolor='red', facecolor='none'
-            )
-            ax.add_patch(rect)
-
-    ax.set_xticks(np.arange(seq_len))
-    ax.set_xticklabels(np.arange(1, seq_len + 1))
-
-    # 自适应白边
-    # ax.set_xlim(-0.5, gen_length - 0.5)
-    # ax.set_xticks(np.arange(gen_length))
-    # ax.set_xticklabels(np.arange(1, gen_length + 1), rotation=90, fontsize=8) # 当画布很宽时，标签旋转防止重叠
-
-    ax.set_yticks([0])
-    ax.set_yticklabels(["Pred"])
-    ax.set_xlabel("Token Position")
+    
 
 # 辅助函数2: 绘制全部的预测结果，并高亮某一步
 def plot_decoding_history_on_ax(ax, tokens, transfers, confidences=None, img_cache=None, step_idx=-1, prompt_len=0):

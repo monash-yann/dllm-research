@@ -40,6 +40,7 @@ class DLLMExpr(DLLM):
             max_steps=256,
             block_length=256,
             records=['metrics'],
+            tuned_lens:torch.nn.Module=None
     ) -> GenerateOutput:
         config = self.config
         assert gen_length <= config.max_gen_length, f"gen_length must <= max_gen_length({config.max_gen_length})"
@@ -88,18 +89,22 @@ class DLLMExpr(DLLM):
                 block_mask[b, curr_decoding_pos[b]: min(curr_decoding_pos[b] + block_length, total_lengths[b].item())] = True
         
             # 模型传播
+            output = None
             if config.cfg_scale > 0.:
                 un_x = x.clone()
                 un_x[prompt_index] = config.mask_id
                 x_ = torch.cat([x, un_x], dim=0)
-                logits = self.model(x_, attention_mask=torch.cat([attention_mask, attention_mask], dim=0)).logits
+                output = self.model(x_, attention_mask=torch.cat([attention_mask, attention_mask], dim=0))
+                logits = output.logits
                 logits, un_logits = torch.chunk(logits, 2, dim=0)
                 logits = un_logits + (config.cfg_scale + 1) * (logits - un_logits)
             else:
-                # result = (x, output_attentions=True)
-                output = self.model(x, attention_mask=attention_mask, output_hidden_states=True)
+                # 主要走这里，dllm暂时不用cfg
+                output = self.model(x, attention_mask=attention_mask, output_hidden_states=True, output_attentions=True)
                 logits = output.logits
-                hidden_states = torch.stack(output.hidden_states)  # will be collected by recorder. n_layers * (b, seq_len, hidden_size)
+                # hidden_states = torch.stack(output.hidden_states)  # will be collected by recorder. n_layers * (b, seq_len, hidden_size)
+                # attentions = torch.stack(output.attentions)  # will be collected by recorder. n_layers * (b, n_heads, seq_len, seq_len)
+                # print(f"attentions shape: {attentions.shape}, hidden_states shape: {hidden_states.shape}.")
             
             if config.dllm_type == 'llada':
                 pass
@@ -150,6 +155,17 @@ class DLLMExpr(DLLM):
                     _, select_index = torch.topk(effective_confidences[b], k=1)
                     transfer_index[b, select_index] = True
 
+                # idea: 临近位置tuned_lens累计置信度兜底
+                # if not transfer_index[b].any() and (x[b, block_start: block_end] == config.mask_id).any():
+                #     # 1. 找到最高conf位置
+                #     _, tgt_pos = torch.topk(effective_confidences[b], k=1)
+                    
+                #     # 2. 获取临近位置的tuned_lens输出(hidden_states -> tuned_lens关键列 -> unembedding)
+                #     d = 1  # 临近范围
+                    
+                #     # 3. 各位置输出记为tuned_lens众数，累计conf高的位置被解码
+                #     pass
+
             # 更新信息
             x[transfer_index] = x0[transfer_index]
             mask_token_index = (x == config.mask_id)
@@ -165,8 +181,7 @@ class DLLMExpr(DLLM):
                 # print(f"step {metric_recorder.accumulated_steps} over")
                 metric_recorder.on_step_end()
             if 'state_trace' in records:
-                state_trace_recorder.on_step_end(x0, effective_confidences, transfer_index, hidden_states)
-
+                state_trace_recorder.on_step_end(x0, confidences, transfer_index, output.hidden_states, output.attentions)
 
         # compute recorder
         if 'metrics' in records:
@@ -187,11 +202,11 @@ class DLLMExpr(DLLM):
 
 def main():
     # set_seed(1234)
-    device = 'cuda:1'
+    device = 'cuda:2'
 
     # gsm8k prompt
     gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    prompts = gsm8k_dataset['test']['question'][0:1]
+    prompts = gsm8k_dataset['test']['question'][5:6]
 
     # 4-shot prompt
     # few_shot_filename = "prompts/gsm8k_shot.txt"
@@ -207,8 +222,8 @@ def main():
     # prompts = humaneval_dataset['prompt'][0:3]
 
     # use llada
-    model_path = "/home/xiangzhong_ayl/dllm/models/LLaDA-8B-Instruct"
-    # _path = "/homebck/home/xiangzhong_guest/dllm/s/LLADA-8B-Instruct"
+    # model_path = "/home/xiangzhong_ayl/dllm/models/LLaDA-8B-Instruct"
+    model_path = "/home/xiangzhong_ayl/dllm/works/dllm-research/models/LLaDA-8B-Instruct"
     token_info = {
         'mask_id': 126336,
         'bos_id': 126080,
@@ -224,14 +239,14 @@ def main():
         max_weight=1.0,
         initial_min_weight=0.05,
         remasking="low_confidence",
-        decoding_method="topk",
+        decoding_method="fixed",
         factor=1,
         k=1,
         confidence_threshold=0.9,
         **token_info
     )
 
-    gen_length = 32
+    gen_length = 68
     block_length = 32
     sampler = DLLMExpr.from_path(
         model_path=model_path,
@@ -240,24 +255,40 @@ def main():
         torch_dtype=torch.bfloat16
     )
     # sampler.set_length_strategy(DAEDAL())   # dynamic length
-
     tokenizer = sampler.tokenizer
     
+
+    # 加载tuned_lens
+    from tool.tuned_lens.tuned_lens import TunedLens
+
+    tuned_lens = TunedLens.from_model_and_pretrained_lens(
+        model=sampler.model,
+        lens_path=f'tool/tuned_lens/checkpoints/model.safetensors',
+        device=device
+    )
+    tuned_lens.eval()
+
     for i, prompt_text in enumerate(prompts):
-        print('=' * 20 + f" Generating prompt_idx: {i} " + "=" * 20)
+        # prompt_text += " Solve it step by step."
+        prompt_text += "\nWrap the final answer in a \\boxed{}."
+        print('=' * 20 + f" Generating prompt_idx: {i} " + '=' * 20)
         print(f"Prompt_{i}: {prompt_text}\n")
 
         m = [{"role": "user", "content": prompt_text}]
         prompt_text = tokenizer.apply_chat_template(m, add_generation_prompt=True, tokenize=False)
         input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
 
-        OUT = sampler.generate(prompt=input_ids, gen_length=gen_length, max_steps=gen_length, block_length=block_length, records=['metrics', 'state_trace'])
+        # state_trace
+        OUT = sampler.generate(prompt=input_ids, gen_length=gen_length, max_steps=gen_length, block_length=block_length,
+                                records=['metrics', 'state_trace'], tuned_lens=tuned_lens
+                                )
         out = OUT.out
         ans = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
         
         print(f"Prompt_{i}'s answer: {ans}\n")
         print(f"Generation Metrics: {OUT.metrics}\n")
         print(f"hidden_states shape: {OUT.state_trace['hidden_states_all'].shape}\n")
+        print(f"attentions shape: {OUT.state_trace['attentions_all'].shape}\n")
 
         # 将hidden states保存到本地文件
         # np.save(f'visualization/huashan2/rawdata/hidden_states_gsm8k_pmt{i}.npy', OUT.state_trace['hidden_states_all'])

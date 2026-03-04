@@ -669,7 +669,6 @@ class LLaDABlock(nn.Module):
                 is_causal=False,
             )
 
-    # 返回注意力权重的新函数
     # @get_local('attention_weights')
     def _manually_scaled_dot_product_attention(
             self,
@@ -707,7 +706,7 @@ class LLaDABlock(nn.Module):
         output = torch.matmul(attention_weights, v)
 
         # 返回最终输出，注意力权重矩阵由装饰器得到
-        return output
+        return output, attention_weights
 
     def attention(
         self,
@@ -717,6 +716,7 @@ class LLaDABlock(nn.Module):
         attention_bias: Optional[torch.Tensor] = None,
         layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
+        output_attentions: bool = False,  # 新增参数以控制是否返回注意力权重
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         B, T, C = q.size()  # batch size, sequence length, d_model
         dtype = k.dtype
@@ -757,31 +757,34 @@ class LLaDABlock(nn.Module):
             )
 
         # Get the attention scores.
-        # shape: (B, nh, T, hs)
-        # att = self._scaled_dot_product_attention(
-        #     q,
-        #     k,
-        #     v,
-        #     attn_mask=None,
-        #     dropout_p=0.0 if not self.training else self.config.attention_dropout,
-        #     is_causal=False,
-        # )
+        attn_weights = None
+        if output_attentions:
+            # 调用手动实现的dot_product以获取attention_weights
+            att, attn_weights = self._manually_scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=None,
+                dropout_p=0.0 if not self.training else self.config.attention_dropout,
+                is_causal=False,
+            )
+        else:
+            # torch默认的attention采用flash attention，不返回attn_weights
+            att = self._scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=None,
+                dropout_p=0.0 if not self.training else self.config.attention_dropout,
+                is_causal=False,
+            )
 
-        # 调用手动实现的dot_product以获取attention_weights
-        att = self._manually_scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            attn_mask=None,
-            dropout_p=0.0 if not self.training else self.config.attention_dropout,
-            is_causal=False,
-        )
 
-        # Re-assemble all head outputs side-by-side.
+        # Re-assemble all head outputs side-by-side. (B, nh, T, hs) -> (B, T, C)
         att = att.transpose(1, 2).contiguous().view(B, T, C)
 
         # Apply output projection.
-        return self.attn_out(att), present
+        return self.attn_out(att), present, attn_weights
 
     @abstractmethod
     def forward(
@@ -847,6 +850,7 @@ class LLaDASequentialBlock(LLaDABlock):
         attention_bias: Optional[torch.Tensor] = None,
         layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
+        output_attentions: bool = False,  # 新增参数以控制是否返回注意力权重
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         # Get query, key, value projections.
         # shape:
@@ -864,11 +868,11 @@ class LLaDASequentialBlock(LLaDABlock):
 
         # Get attention scores.
         if self._activation_checkpoint_fn is not None:
-            att, cache = self._activation_checkpoint_fn(  # type: ignore
-                self.attention, q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache
+            att, cache, attn_weights = self._activation_checkpoint_fn(  # type: ignore
+                self.attention, q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache, output_attentions=output_attentions
             )
         else:
-            att, cache = self.attention(q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache)
+            att, cache, attn_weights = self.attention(q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache, output_attentions=output_attentions)
 
         # Add attention scores.
         # shape: (B, T, C)
@@ -890,7 +894,7 @@ class LLaDASequentialBlock(LLaDABlock):
         x = self.dropout(x)
         x = og_x + x
 
-        return x, cache
+        return x, cache, attn_weights
 
 
 class LLaDALlamaBlock(LLaDABlock):
@@ -949,6 +953,7 @@ class LLaDALlamaBlock(LLaDABlock):
         attention_bias: Optional[torch.Tensor] = None,
         layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
+        output_attentions: bool = False,  # 新增参数以控制是否返回注意力权重
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         # Get query, key, value projections.
         # shape:
@@ -964,11 +969,11 @@ class LLaDALlamaBlock(LLaDABlock):
 
         # Get attention scores.
         if self._activation_checkpoint_fn is not None:
-            att, cache = self._activation_checkpoint_fn(  # type: ignore
-                self.attention, q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache
+            att, cache, attn_weights = self._activation_checkpoint_fn(  # type: ignore
+                self.attention, q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache, output_attentions=output_attentions
             )
         else:
-            att, cache = self.attention(q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache)
+            att, cache, attn_weights = self.attention(q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache, output_attentions=output_attentions)
 
         # Add attention scores.
         # shape: (B, T, C)
@@ -991,7 +996,7 @@ class LLaDALlamaBlock(LLaDABlock):
         x = self.dropout(x)
         x = og_x + x
 
-        return x, cache
+        return x, cache, attn_weights
 
 
 class LLaDAOutput(NamedTuple):
@@ -1009,6 +1014,11 @@ class LLaDAOutput(NamedTuple):
     hidden_states: Optional[Tuple[torch.Tensor]]
     """
     Hidden states from each block.
+    """
+
+    attentions: Optional[Tuple[torch.Tensor]] = None
+    """
+    Attentions from each block.
     """
 
 
@@ -1228,7 +1238,8 @@ class LLaDAModel(nn.Module):
         past_key_values: Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]] = None,
         use_cache: bool = False,
         last_logits_only: bool = False,
-        output_hidden_states: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = False,
+        output_attentions: Optional[bool] = False,
     ) -> LLaDAOutput:
         """
         :param input_ids: A tensor of shape `(batch_size, seq_len)`.
@@ -1259,13 +1270,12 @@ class LLaDAModel(nn.Module):
         :param use_cache: If `True`, return key and value tensors for each block.
         :param last_logits_only: If `True`, only compute the logits for the last token of each sequence.
             This can speed up decoding when you only care about the next token.
+        :param output_attentions: If `True`, return attention weights for each attention block.
         """
         # Add Basic MDM Model config check
         assert not self.config.alibi, "Alibi length extrapolation is not supported for MDM."
         assert self.config.rope, "Rope must be used in Llama-Encoder for MDM."
         assert (past_key_values is None and not use_cache), "The kvcache is not suppotred for MDM."
-
-        output_hidden_states = output_hidden_states if output_hidden_states is not None else False
 
         if past_key_values:
             assert len(past_key_values) == self.config.n_layers
@@ -1342,7 +1352,8 @@ class LLaDAModel(nn.Module):
         attn_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = [] if use_cache else None
 
         # decoder layers
-        all_hidden_states = []
+        all_hidden_states = [] if output_hidden_states else None
+        all_attentions = [] if output_attentions else None
 
         # Apply blocks one-by-one.
         if self.config.block_group_size == 1:
@@ -1368,15 +1379,20 @@ class LLaDAModel(nn.Module):
                     )
                 ):
                     # shape: (batch_size, seq_len, d_model)
-                    x, cache = self._activation_checkpoint_fn(
-                        block, x, attention_bias=attention_bias, layer_past=layer_past, use_cache=use_cache
+                    x, cache, attn_weights = self._activation_checkpoint_fn(
+                        block, x, attention_bias=attention_bias, layer_past=layer_past, use_cache=use_cache, output_attentions=output_attentions
                     )
                 else:
                     # shape: (batch_size, seq_len, d_model)
-                    x, cache = block(x, attention_bias=attention_bias, layer_past=layer_past, use_cache=use_cache)
+                    x, cache, attn_weights = block(x, attention_bias=attention_bias, layer_past=layer_past, use_cache=use_cache, output_attentions=output_attentions)[:3]
+                
+                # KV Cache
                 if attn_key_values is not None:
                     assert cache is not None
                     attn_key_values.append(cache)
+                # 记录attn_weights
+                if output_attentions:
+                    all_attentions.append(attn_weights)
         else:
             for group_idx, block_group in enumerate(self.transformer.block_groups):
                 if output_hidden_states:
@@ -1417,7 +1433,12 @@ class LLaDAModel(nn.Module):
         if self.config.scale_logits:
             logits.mul_(1 / math.sqrt(self.config.d_model))
 
-        return LLaDAOutput(logits=logits, attn_key_values=attn_key_values, hidden_states=tuple(all_hidden_states) if output_hidden_states else None)  # type: ignore[arg-type]
+        return LLaDAOutput(
+            logits=logits, 
+            attn_key_values=attn_key_values, 
+            hidden_states=tuple(all_hidden_states) if output_hidden_states else None,
+            attentions=tuple(all_attentions) if output_attentions else None
+        )  # type: ignore[arg-type]
 
 
 def create_model_config_from_pretrained_config(config: LLaDAConfig):
@@ -1470,8 +1491,8 @@ class LLaDAModelLM(PreTrainedModel):
         if use_cache is None:
             use_cache = self.config.use_cache
 
-        if output_attentions:
-            raise ValueError("output_attentions is not yet supported in LLaDA-8B-Instruct")
+        # if output_attentions:
+        #     raise ValueError("output_attentions is not yet supported in LLaDA-8B-Instruct")
 
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -1484,10 +1505,12 @@ class LLaDAModelLM(PreTrainedModel):
             past_key_values=past_key_values,
             use_cache=use_cache,
             output_hidden_states=output_hidden_states,
+            output_attentions=output_attentions,
         )
 
         logits = outputs.logits
         hidden_states = outputs.hidden_states
+        attentions = outputs.attentions
 
         loss = None
         if labels is not None:
@@ -1501,6 +1524,7 @@ class LLaDAModelLM(PreTrainedModel):
             logits=logits,
             past_key_values=outputs.attn_key_values,
             hidden_states=hidden_states,
+            attentions=attentions,
         )
 
     def can_generate(self) -> bool:
