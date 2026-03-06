@@ -82,6 +82,8 @@ class DLLMExpr(DLLM):
         # curr_decoding_pos: 记录每个batch当前解码到的位置
         curr_decoding_pos = torch.full((batch,), prompt_len, dtype=torch.long, device=x.device) #(b,)
         mask_token_index = (x == config.mask_id)
+
+        fallback_steps = []
         while mask_token_index.any():
             # 预处理，统计信息
             block_mask = torch.zeros_like(x, dtype=torch.bool, device=x.device)
@@ -151,20 +153,57 @@ class DLLMExpr(DLLM):
                     pass
 
                 # top-1兜底.
-                if not transfer_index[b].any() and (x[b, block_start: block_end] == config.mask_id).any():
-                    _, select_index = torch.topk(effective_confidences[b], k=1)
-                    transfer_index[b, select_index] = True
+                # if not transfer_index[b].any() and (x[b, block_start: block_end] == config.mask_id).any():
+                #     _, select_index = torch.topk(effective_confidences[b], k=1)
+                #     transfer_index[b, select_index] = True
+                #     fallback_steps.append(metric_recorder.accumulated_steps)
+                #     print(f"Top-1 fallback at step {metric_recorder.accumulated_steps}. Selected idx: {select_index.item()}, confidence: {effective_confidences[b, select_index].item():.4f}.")
 
                 # idea: 临近位置tuned_lens累计置信度兜底
-                # if not transfer_index[b].any() and (x[b, block_start: block_end] == config.mask_id).any():
-                #     # 1. 找到最高conf位置
-                #     _, tgt_pos = torch.topk(effective_confidences[b], k=1)
-                    
-                #     # 2. 获取临近位置的tuned_lens输出(hidden_states -> tuned_lens关键列 -> unembedding)
-                #     d = 1  # 临近范围
-                    
-                #     # 3. 各位置输出记为tuned_lens众数，累计conf高的位置被解码
-                #     pass
+                
+                if not transfer_index[b].any() and (x[b, block_start: block_end] == config.mask_id).any():
+                    # 1. 找到最高conf位置
+                    _, tgt_pos = torch.topk(effective_confidences[b], k=1)
+                    tgt_pos = tgt_pos.item()
+                    d = 3   # 临近半径
+                    start_layer = 10 # 从该层开始抽取
+
+                    # 假设 tgt_pos 是我们要兜底的中心点
+                    left_bound = max(prompt_len, tgt_pos - d)
+                    right_bound = min(total_lengths[b].item() - 1, tgt_pos + d)
+
+                    # 获取有效的目标索引 (假设最多 2d+1 个)
+                    target_indices = torch.arange(left_bound, right_bound + 1, device=x.device)
+
+                    # 过滤：只保留真的是 MASK 的位置
+                    mask_condition = (x[b, target_indices] == config.mask_id)
+                    valid_indices = target_indices[mask_condition] # 形状: (K,), K <= 2d+1
+
+                    # 准备累加张量
+                    cum_probs = torch.zeros((len(valid_indices), self.model.config.vocab_size), device=x.device, dtype=torch.float32)
+                    for layer_idx in range(start_layer, self.model.config.num_hidden_layers):
+                        # 取出整层的 hidden states
+                        # 注意: outputs.hidden_statesd 的0是 embedding, -1是post-norm logits
+                        h_layer = output.hidden_states[layer_idx] # (batch, seq_len, hidden_size)
+                        # 降维优化：在送入 tuned_lens 前，切片抽出那 K 个位置, st.(1, seq_len, 4096) -> (1, 2d+1, 4096)
+                        h_cands = h_layer[b:b+1, valid_indices, :]  # (1, K, hidden_size) 
+                        # 计算这 K 个位置的 logits (只进行了极小规模的矩阵乘法)
+                        tuned_logits_k = tuned_lens(h_cands, layer_idx) # 形状: (1, K, vocab_size)
+                        # 转为概率并累加
+                        probs_k = F.softmax(tuned_logits_k.squeeze(0).float(), dim=-1)  # (K, vocab_size)
+                        cum_probs += probs_k
+                    cum_probs += p[b, valid_indices]  # 累加原始置信度
+
+                    t_pred_tokens = torch.argmax(cum_probs, dim=-1)  # (K,)
+                    t_pred_confs = cum_probs[torch.arange(cum_probs.shape[0]), t_pred_tokens]  # (K,)
+                    # 选出最高累计置信度的位置
+                    best_idx = torch.argmax(t_pred_confs)
+                    transfer_index[b, valid_indices[best_idx]] = True
+                    x0[b, valid_indices[best_idx]] = t_pred_tokens[best_idx]  # 直接修改x0对应位置为tuned_lens的预测结果
+
+                    fallback_steps.append(metric_recorder.accumulated_steps)
+                    print(f"tuned lens fallback at step {metric_recorder.accumulated_steps}. Best idx: {valid_indices[best_idx].item()}, confidence: {t_pred_confs[best_idx].item():.4f}.")
+
 
             # 更新信息
             x[transfer_index] = x0[transfer_index]
@@ -188,7 +227,7 @@ class DLLMExpr(DLLM):
             metric_recorder.on_generate_end(gen_length=gen_length, max_steps=gen_length)
         if 'state_trace' in records:
             state_trace_recorder.on_generate_end()
-
+            state_trace_recorder.record['fallback_steps'] = fallback_steps
 
         # 把steps_hidden_states存到本地文件
         # np.save(f'visualization/output/hidden_states_baseline.npy', np.array(steps_hidden_states))
@@ -206,7 +245,7 @@ def main():
 
     # gsm8k prompt
     gsm8k_dataset = load_dataset('openai/gsm8k', 'main')
-    prompts = gsm8k_dataset['test']['question'][5:6]
+    prompts = gsm8k_dataset['test']['question'][2:3]
 
     # 4-shot prompt
     # few_shot_filename = "prompts/gsm8k_shot.txt"
@@ -246,7 +285,7 @@ def main():
         **token_info
     )
 
-    gen_length = 68
+    gen_length = 256
     block_length = 32
     sampler = DLLMExpr.from_path(
         model_path=model_path,
@@ -268,9 +307,10 @@ def main():
     )
     tuned_lens.eval()
 
+    math_prefix = "You are a math expert. You will be given a question to solve. Wrap the final answer in a \\boxed{}. \n"
+
     for i, prompt_text in enumerate(prompts):
-        # prompt_text += " Solve it step by step."
-        prompt_text += "\nWrap the final answer in a \\boxed{}."
+        prompt_text = math_prefix + prompt_text
         print('=' * 20 + f" Generating prompt_idx: {i} " + '=' * 20)
         print(f"Prompt_{i}: {prompt_text}\n")
 
@@ -281,7 +321,7 @@ def main():
         # state_trace
         OUT = sampler.generate(prompt=input_ids, gen_length=gen_length, max_steps=gen_length, block_length=block_length,
                                 records=['metrics', 'state_trace'], tuned_lens=tuned_lens
-                                )
+                        )
         out = OUT.out
         ans = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
         

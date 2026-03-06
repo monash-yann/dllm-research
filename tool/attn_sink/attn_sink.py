@@ -38,14 +38,6 @@ def sink_metric_epsilon(W, epsilon=0.0):
 
 
 
-
-
-
-
-
-
-
-
 # def sink_metric_epsilon_steps(W, epsilon=0.0, exclude_self=False):
 #     """
 #     Paper's sink rule with epsilon sensitivity.

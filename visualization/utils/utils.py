@@ -42,7 +42,8 @@ def visualize_overall_steps(
         is_save:bool=True, 
         output_filename:str="", 
         phase_records=None,
-        color_map='Blues'
+        color_map='Blues',
+        fallback_steps:list=None
     ):
 
     DPI = 100
@@ -67,22 +68,24 @@ def visualize_overall_steps(
                     ha="center", va="center", color=text_color, fontsize=fontsize)
 
             # transfer token框红：检查当前步骤(i)的当前位置(j)的transfer值是否为True
+            edgecolor = 'green' if fallback_steps is not None and i in fallback_steps else 'red'
             if transfer_idxs[i][j]:
                 rect = patches.Rectangle(
                     (j - 0.5, i - 0.5),
                     1, 1,
                     linewidth=5,          # 设置边框线宽
-                    edgecolor='red',      # 设置边框颜色为红色
+                    edgecolor=edgecolor,      # 设置边框颜色为红色/粉色/绿色
                     facecolor='none'      # 设置填充色为无，只保留边框
                 )
                 ax.add_patch(rect)
-            # sink token框为棕色
+
+            # sink token框为黄色
             if sink_mask is not None and sink_mask[i][j]:
                 rect = patches.Rectangle(
                     (j - 0.5, i - 0.5),
                     1, 1,
                     linewidth=5,          # 设置边框线宽
-                    edgecolor='yellow',      # 设置边框颜色为棕色
+                    edgecolor='yellow',      # 设置边框颜色为黄色
                     facecolor='none'      # 设置填充色为无，只保留边框
                 )
                 ax.add_patch(rect)
@@ -103,8 +106,8 @@ def visualize_overall_steps(
                  f"******Answer******: {answer if len(answer) <=2000 else answer[:2000]}", fontsize=fontsize)
 
     # 设置刻度，使其显示在每个方格的中心
-    tick_spacing_x = 10
-    tick_spacing_y = 5
+    tick_spacing_x = 8
+    tick_spacing_y = 4
     ax.set_xticks(np.arange(0, seq_len, tick_spacing_x))
     ax.set_yticks(np.arange(0, num_steps, tick_spacing_y))
     ax.set_xticklabels(np.arange(0, seq_len, tick_spacing_x)) 
